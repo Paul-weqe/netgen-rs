@@ -10,3 +10,4 @@ rtnetlink = { version="0.14.1", path="../rtnetlink", features = ["tokio_socket",
 netlink-packet-route = "0.19"
 tokio = { version = "1.41.1", features = ["full"] }
 libc = "0.2.164"
+enum-as-inner = "0.6.1"

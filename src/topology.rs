@@ -1,9 +1,10 @@
 use crate::Index;
+use enum_as_inner::EnumAsInner;
 use nix::net::if_::if_nametoindex;
 use rtnetlink::{
     new_connection, Error as RtError, Handle, LinkBridge, LinkVeth, NetworkNamespace, NETNS_PATH,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Error as IoError, ErrorKind, Result as IoResult};
 use std::os::fd::AsRawFd;
@@ -11,36 +12,54 @@ use std::os::fd::RawFd;
 use std::process::Command;
 use tokio;
 
-pub(crate) trait NetworkDevice {
-    // add code here
+#[derive(PartialEq, EnumAsInner)]
+enum NodeType {
+    Router,
+    Switch,
 }
 
+#[derive(Debug, Clone)]
 pub(crate) struct Router {
-    id: u32,
     name: String,
     fd: RawFd,
 }
-impl NetworkDevice for Router {}
 
+#[derive(Debug, Clone)]
 pub(crate) struct Switch {
-    id: u32,
     name: String,
     ifindex: Index,
 }
-impl NetworkDevice for Switch {}
 
+#[derive(Debug, Clone)]
+enum LinkType {
+    RouterToRouter,
+    RouterToSwitch,
+    SwitchToRouter,
+    SwitchToSwitch,
+}
 pub(crate) struct Link {
-    src_id: u32,
-    dst_id: u32,
+    src_name: String,
     src_iface: String,
+    dst_name: String,
     dst_iface: String,
+    link_type: LinkType,
+}
+
+impl Link {
+    pub fn to_vec(&self) -> Vec<String> {
+        vec![
+            self.src_name.clone(),
+            self.src_iface.clone(),
+            self.dst_name.clone(),
+            self.dst_iface.clone(),
+        ]
+    }
 }
 
 pub(crate) struct Topology {
     handle: Handle,
-    next_id: u32,
-    routers: Vec<Router>,
-    switches: Vec<Switch>,
+    routers: BTreeMap<String, Router>,
+    switches: BTreeMap<String, Switch>,
     links: Vec<Link>,
 }
 
@@ -50,9 +69,8 @@ impl Topology {
         tokio::spawn(connection);
         Self {
             handle,
-            next_id: 1,
-            routers: vec![],
-            switches: vec![],
+            routers: BTreeMap::new(),
+            switches: BTreeMap::new(),
             links: vec![],
         }
     }
@@ -64,31 +82,18 @@ impl Topology {
     /// namespace and populating the router's path.
     ///
     /// use of BTreeSet is to ensure each of the strings is unique
-    pub(crate) async fn add_routers(&mut self, routers: BTreeSet<String>) {
-        println!("adding routers....");
+    pub(crate) async fn add_routers(&mut self, routers: BTreeSet<&str>) {
         for name in routers {
-            let fd = self.add_router(&name).await.unwrap();
-            let router = Router {
-                id: self.next_id,
-                name,
-                fd,
-            };
-            self.routers.push(router);
-            self.next_id += 1;
+            let router = self.add_router(name).await.unwrap();
+            self.routers.insert(name.to_string(), router);
         }
     }
 
-    pub(crate) async fn add_switches(&mut self, switches: BTreeSet<String>) {
+    pub(crate) async fn add_switches(&mut self, switches: BTreeSet<&str>) {
         println!("adding switches....");
         for name in switches {
-            let ifindex = self.add_switch(&name).await.unwrap();
-            let switch = Switch {
-                id: self.next_id,
-                name,
-                ifindex,
-            };
-            self.switches.push(switch);
-            self.next_id += 1;
+            let switch = self.add_switch(name).await.unwrap();
+            self.switches.insert(name.to_string(), switch);
         }
     }
 
@@ -106,41 +111,99 @@ impl Topology {
     ///     // [ src_node, src_iface, dst_node, dst_iface ]
     ///  ]
     ///
-    pub(crate) async fn add_links(&mut self, links: Vec<Vec<String>>) {
-        for link_group in links {
-            let link = self
-                .add_link(
-                    &link_group[0],
-                    &link_group[1],
-                    &link_group[2],
-                    &link_group[3],
-                )
-                .await
-                .unwrap();
+    pub(crate) async fn add_links(&mut self, links: Vec<Vec<&str>>) {
+        for link in links {
+            // make sure that the link does not exist
+            if self.link_exists(link.clone()) {
+                println!(
+                    "Problem creating link [{}:{}]-[{}:{}]. Link already exists",
+                    link[0], link[1], link[2], link[3]
+                );
+                continue;
+            }
+
+            // make sure the hosts exist
+            let node_1_exists = self.node_exists(&link[0]).await;
+            let node_2_exists = self.node_exists(&link[2]).await;
+
+            if let Some(node_type1) = &node_1_exists
+                && let Some(node_type2) = &node_2_exists
+            {
+                let mut link_type: Option<LinkType> = None;
+                if node_type1.is_router() && node_type2.is_switch() {
+                    link_type = Some(LinkType::RouterToRouter);
+                } else if node_type1.is_router() && node_type2.is_switch() {
+                    link_type = Some(LinkType::RouterToSwitch);
+                } else if node_type1.is_switch() && node_type2.is_router() {
+                    link_type = Some(LinkType::SwitchToRouter);
+                } else if node_type1.is_switch() && node_type2.is_switch() {
+                    link_type = Some(LinkType::SwitchToSwitch);
+                }
+
+                if let Some(link_type) = link_type {
+                    let link = self
+                        .add_link(&link[0], &link[1], &link[2], &link[3], link_type)
+                        .await
+                        .unwrap();
+                    self.links.push(link);
+                    continue;
+                }
+            }
+
+            // print out when either the first node does not exist
+            // or the second node does not exist
+            if node_1_exists.is_none() {
+                println!(
+                    "Problem creating link [{}:{}]-[{}:{}]. Node {} does not exist",
+                    link[0], link[1], link[2], link[3], link[0]
+                );
+                continue;
+            } else if node_2_exists.is_none() {
+                println!(
+                    "Problem creating link [{}:{}]-[{}:{}]. Node {} does not exist",
+                    link[0], link[1], link[2], link[3], link[3]
+                );
+                continue;
+            }
         }
     }
 
-    fn find_device_id(&self, name: &str) -> Option<u32> {
-        if let Some(id) = self.find_router_id(name) {
-            return Some(id);
+    fn link_exists(&self, link: Vec<&str>) -> bool {
+        for created_link in &self.links {
+            let created_link = created_link.to_vec();
+            if created_link == link {
+                return true;
+            }
+
+            let l_pair1 = (link[0], link[1]);
+            let l_pair2 = (link[2], link[3]);
+
+            let cl_pair1 = (created_link[0].as_str(), created_link[1].as_str());
+            let cl_pair2 = (created_link[2].as_str(), created_link[3].as_str());
+
+            if (l_pair1 == cl_pair2) || (l_pair2 == cl_pair1) {
+                return true;
+            }
         }
-        if let Some(id) = self.find_switch_id(name) {
-            return Some(id);
-        }
-        None
+        false
     }
 
-    fn find_router_id(&self, name: &str) -> Option<u32> {
-        None
-    }
-
-    fn find_switch_id(&self, name: &str) -> Option<u32> {
+    /// Tells you whether a node of a specific name exists
+    /// If it exists, it lets you know what the type of the node is
+    async fn node_exists(&self, node_name: &str) -> Option<NodeType> {
+        // look through the switches and routers
+        if self.routers.get(node_name).is_some() {
+            return Some(NodeType::Router);
+        }
+        if self.switches.get(node_name).is_some() {
+            return Some(NodeType::Switch);
+        }
         None
     }
 
     /// Creates a Node's namespace and all it's details.
     /// Returns a string that is the node's path.
-    pub(crate) async fn add_router(&self, name: &str) -> IoResult<RawFd> {
+    pub(crate) async fn add_router(&self, name: &str) -> IoResult<Router> {
         let mut ns_path = String::new();
         if let Err(err) = NetworkNamespace::add(name.to_string()).await {
             let e = format!("unable to create namespace\n {:#?}", err);
@@ -149,10 +212,13 @@ impl Topology {
         ns_path.push_str(NETNS_PATH);
         ns_path.push_str(name);
         let f = File::open(ns_path)?;
-        Ok(f.as_raw_fd())
+        Ok(Router {
+            name: name.to_string(),
+            fd: f.as_raw_fd(),
+        })
     }
 
-    pub(crate) async fn add_switch(&self, name: &str) -> IoResult<Index> {
+    pub(crate) async fn add_switch(&self, name: &str) -> IoResult<Switch> {
         if let Err(err) = self
             .handle
             .link()
@@ -164,21 +230,25 @@ impl Topology {
             return Err(IoError::new(ErrorKind::Other, e.as_str()));
         }
         let ifindex = if_nametoindex(name)?;
-        Ok(ifindex)
+        Ok(Switch {
+            name: name.to_string(),
+            ifindex,
+        })
     }
 
     /// Creates a link that will be used between two nodes:
     ///
-    /// src_iface |===============================| dst_iface
+    /// src_name |===============================| dst_name
     ///
     /// Note that the src_iface and dst_iface should not have the same name
     pub(crate) async fn add_link(
         &self,
-        src_iface: &str,
         src_node: &str,
-        dst_iface: &str,
+        src_iface: &str,
         dst_node: &str,
-    ) -> IoResult<()> {
+        dst_iface: &str,
+        link_type: LinkType,
+    ) -> IoResult<Link> {
         // create the link
         if let Err(err) = self
             .handle
@@ -188,23 +258,48 @@ impl Topology {
             .await
         {
             let e = format!(
-                "problem creating link [{src_node}:{src_iface} - {dst_node}:{dst_iface}]\n {:#?}",
+                "problem creating veth link [{src_node}:{src_iface} - {dst_node}:{dst_iface}]\n {:#?}",
                 err
             );
             return Err(IoError::new(ErrorKind::Other, e.as_str()));
         }
 
-        // TODO: change the following commands to rtnetlink calls
-        //
-        // connect the link's endpoints to a namespace
+        let mut lt1: &str = "";
+        let mut lt2: &str = "";
+
+        match link_type {
+            LinkType::RouterToRouter => {
+                lt1 = "netns";
+                lt2 = "netns";
+            }
+            LinkType::RouterToSwitch => {
+                lt1 = "netns";
+                lt2 = "master";
+            }
+            LinkType::SwitchToRouter => {
+                lt1 = "master";
+                lt2 = "netns";
+            }
+            LinkType::SwitchToSwitch => {
+                lt1 = "master";
+                lt2 = "master";
+            }
+        }
+
         let _ = Command::new("ip")
-            .args(["link", "set", src_iface, "netns", src_node])
+            .args(["link", "set", src_iface, lt1, src_node])
             .output();
 
         let _ = Command::new("ip")
-            .args(["link", "set", dst_iface, "netns", dst_node])
+            .args(["link", "set", dst_iface, lt2, dst_node])
             .output();
 
-        Ok(())
+        Ok(Link {
+            src_name: src_node.to_string(),
+            src_iface: src_iface.to_string(),
+            dst_name: dst_node.to_string(),
+            dst_iface: dst_iface.to_string(),
+            link_type,
+        })
     }
 }

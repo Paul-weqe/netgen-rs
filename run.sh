@@ -1,4 +1,4 @@
 #!/bin/bash 
 
-cargo build 
+cargo +nightly build 
 sudo ./target/debug/netgen-rs
