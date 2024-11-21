@@ -1,9 +1,7 @@
 use crate::Index;
 use enum_as_inner::EnumAsInner;
 use nix::net::if_::if_nametoindex;
-use rtnetlink::{
-    new_connection, Error as RtError, Handle, LinkBridge, LinkVeth, NetworkNamespace, NETNS_PATH,
-};
+use rtnetlink::{new_connection, Handle, LinkBridge, LinkVeth, NetworkNamespace, NETNS_PATH};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Error as IoError, ErrorKind, Result as IoResult};
@@ -31,7 +29,7 @@ pub(crate) struct Switch {
 }
 
 #[derive(Debug, Clone)]
-enum LinkType {
+pub(crate) enum LinkType {
     RouterToRouter,
     RouterToSwitch,
     SwitchToRouter,
@@ -56,7 +54,7 @@ impl Link {
     }
 }
 
-pub(crate) struct Topology {
+pub struct Topology {
     handle: Handle,
     routers: BTreeMap<String, Router>,
     switches: BTreeMap<String, Switch>,
@@ -241,7 +239,7 @@ impl Topology {
     /// src_name |===============================| dst_name
     ///
     /// Note that the src_iface and dst_iface should not have the same name
-    pub(crate) async fn add_link(
+    pub async fn add_link(
         &self,
         src_node: &str,
         src_iface: &str,
@@ -264,8 +262,8 @@ impl Topology {
             return Err(IoError::new(ErrorKind::Other, e.as_str()));
         }
 
-        let mut lt1: &str = "";
-        let mut lt2: &str = "";
+        let lt1: &str;
+        let lt2: &str;
 
         match link_type {
             LinkType::RouterToRouter => {
