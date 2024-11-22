@@ -1,5 +1,4 @@
 use crate::Index;
-use enum_as_inner::EnumAsInner;
 use nix::net::if_::if_nametoindex;
 use nix::sched::setns;
 use nix::sched::CloneFlags;
@@ -31,11 +30,52 @@ pub struct Router {
 }
 
 impl Router {
+    /// creates a new namespace that will represent the
+    /// router
+    async fn new(name: &str) -> IoResult<Self> {
+        let mut ns_path = String::new();
+        if let Err(err) = NetworkNamespace::add(name.to_string()).await {
+            let e = format!("unable to create namespace\n {:#?}", err);
+            return Err(IoError::new(ErrorKind::Other, e.as_str()));
+        }
+        ns_path.push_str(NETNS_PATH);
+        ns_path.push_str(name);
+        let router = Self {
+            name: name.to_string(),
+            file_path: ns_path,
+        };
+
+        // make sure the loopback interface of the router up
+        let _ = router.up(String::from("lo")).await;
+        Ok(router)
+    }
+
     /// Runs the commands inside the
     /// router namespace.
-    async fn run<F, T, R>(&self, f: F) -> IoResult<R>
+    ///
+    /// ```no_run
+    /// use topology::Router;
+    /// use std::process::Command;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let router = Router::new("r1").await.unwrap();
+    ///     router.run(move || async move {
+    ///         let output = Command::new("ip")
+    ///             .args(vec!["link"]).output();
+    ///         
+    ///         // this will show you the output
+    ///         // of the `ip link` in the router.
+    ///         // If no modifications have been made,
+    ///         // should only show the loopback ("lo")
+    ///         // interface
+    ///         println!("{#:?}", output);
+    ///     }).await;
+    /// }
+    /// ```
+    pub async fn run<Fut, T, R>(&self, f: Fut) -> IoResult<R>
     where
-        F: FnOnce() -> T + Send + 'static,
+        Fut: FnOnce() -> T + Send + 'static,
         T: Future<Output = R> + Send,
     {
         let current_thread_path = format!("/proc/self/task/{}/ns/net", gettid());
@@ -53,12 +93,29 @@ impl Router {
         Ok(result)
     }
 
+    /// Brings a specific interface of the router up
+    /// administratively.
+    ///
+    /// ```no_run
+    /// // here, we create the br1 bridge
+    /// // We will first create the interface
+    /// // then bring it up
+    ///
+    /// use topology::Router;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let router = Router::new("r1").await.unwrap();
+    ///     // brings up the loopback interface
+    ///     router.up("lo").await;
+    /// }
+    /// ```
     async fn up(&self, iface_name: String) -> IoResult<()> {
         let result = self
             .run(move || async move {
                 if let Ok((connection, handle, _)) = new_connection() {
                     tokio::spawn(connection);
-                    let request = handle
+                    let _ = handle
                         .link()
                         .set(LinkBridge::new(&iface_name).up().build())
                         .execute()
@@ -80,8 +137,25 @@ pub struct Switch {
 }
 
 impl Switch {
+    async fn new(handle: &Handle, name: &str) -> IoResult<Self> {
+        if let Err(err) = handle
+            .link()
+            .add(LinkBridge::new(name).up().build())
+            .execute()
+            .await
+        {
+            let e = format!("problem creating bridge {name}\n {:#?}", err);
+            return Err(IoError::new(ErrorKind::Other, e.as_str()));
+        }
+        let ifindex = if_nametoindex(name)?;
+        Ok(Self {
+            name: name.to_string(),
+            ifindex,
+        })
+    }
+
     async fn up(&self, handle: &Handle) -> IoResult<()> {
-        handle
+        let _ = handle
             .link()
             .set(LinkBridge::new(&self.name).up().build())
             .execute()
@@ -127,7 +201,7 @@ impl NodeType {
     }
 }
 
-pub(crate) struct Link {
+pub struct Link {
     src_name: String,
     src_iface: String,
     dst_name: String,
@@ -169,19 +243,19 @@ impl Topology {
     /// namespace and populating the router's path.
     ///
     /// use of BTreeSet is to ensure each of the strings is unique
-    pub(crate) async fn add_routers(&mut self, routers: BTreeSet<&str>) {
+    pub async fn add_routers(&mut self, routers: BTreeSet<&str>) {
         println!("adding routers...");
         for name in routers {
-            let router = self.add_router(name).await.unwrap();
+            let router = Router::new(name).await.unwrap();
             self.nodes
                 .insert(name.to_string(), NodeType::Router(router));
         }
     }
 
-    pub(crate) async fn add_switches(&mut self, switches: BTreeSet<&str>) {
+    pub async fn add_switches(&mut self, switches: BTreeSet<&str>) {
         println!("adding switches....");
         for name in switches {
-            let switch = self.add_switch(name).await.unwrap();
+            let switch = Switch::new(&self.handle, name).await.unwrap();
             self.nodes
                 .insert(name.to_string(), NodeType::Switch(switch));
         }
@@ -198,10 +272,11 @@ impl Topology {
     /// Will be in the form of:
     ///  vec![
     ///     vec![ "s1", "eth0", "s2", "eth1" ]
-    ///     // [ src_node, src_iface, dst_node, dst_iface ]
     ///  ]
+    /// where
+    /// [ src_node, src_iface, dst_node, dst_iface ]
     ///
-    pub(crate) async fn add_links(&mut self, links: Vec<Vec<&str>>) {
+    pub async fn add_links(&mut self, links: Vec<Vec<&str>>) {
         for link in links {
             // make sure that the link does not exist
             if self.link_exists(link.clone()) {
@@ -211,7 +286,7 @@ impl Topology {
                 );
                 continue;
             }
-            self.add_link(&link[0], &link[1], &link[2], &link[3]).await;
+            let _ = self.add_link(&link[0], &link[1], &link[2], &link[3]).await;
         }
     }
 
@@ -246,44 +321,6 @@ impl Topology {
             }
         }
         None
-    }
-
-    /// Creates a Node's namespace and all it's details.
-    /// Returns a string that is the node's path.
-    pub(crate) async fn add_router(&self, name: &str) -> IoResult<Router> {
-        let mut ns_path = String::new();
-        if let Err(err) = NetworkNamespace::add(name.to_string()).await {
-            let e = format!("unable to create namespace\n {:#?}", err);
-            return Err(IoError::new(ErrorKind::Other, e.as_str()));
-        }
-        ns_path.push_str(NETNS_PATH);
-        ns_path.push_str(name);
-        let router = Router {
-            name: name.to_string(),
-            file_path: ns_path,
-        };
-
-        // bring the loopback interface of the router up
-        router.up(String::from("lo")).await;
-        Ok(router)
-    }
-
-    pub(crate) async fn add_switch(&self, name: &str) -> IoResult<Switch> {
-        if let Err(err) = self
-            .handle
-            .link()
-            .add(LinkBridge::new(name).build())
-            .execute()
-            .await
-        {
-            let e = format!("problem creating bridge {name}\n {:#?}", err);
-            return Err(IoError::new(ErrorKind::Other, e.as_str()));
-        }
-        let ifindex = if_nametoindex(name)?;
-        Ok(Switch {
-            name: name.to_string(),
-            ifindex,
-        })
     }
 
     /// Creates a link that will be used between two nodes:
@@ -328,8 +365,8 @@ impl Topology {
                 .output();
 
             // ensure the interfaces are in the up state
-            node_1.up(&self.handle, src_iface.to_string()).await;
-            node_2.up(&self.handle, dst_iface.to_string()).await;
+            let _ = node_1.up(&self.handle, src_iface.to_string()).await;
+            let _ = node_2.up(&self.handle, dst_iface.to_string()).await;
 
             Ok(Link {
                 src_name: src_node.to_string(),

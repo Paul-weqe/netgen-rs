@@ -1,9 +1,5 @@
-#![feature(let_chains)]
-mod devices;
-mod topology;
-
+use netgen::topology::Topology;
 use std::collections::BTreeSet;
-use topology::Topology;
 
 pub(crate) type Index = libc::c_uint;
 
