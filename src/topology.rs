@@ -1,12 +1,15 @@
 use crate::Index;
 use enum_as_inner::EnumAsInner;
 use nix::net::if_::if_nametoindex;
+use nix::sched::setns;
+use nix::sched::CloneFlags;
+use nix::unistd::gettid;
 use rtnetlink::{new_connection, Handle, LinkBridge, LinkVeth, NetworkNamespace, NETNS_PATH};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
+use std::future::Future;
 use std::io::{Error as IoError, ErrorKind, Result as IoResult};
-use std::os::fd::AsRawFd;
-use std::os::fd::RawFd;
+use std::os::fd::AsFd;
 use std::process::Command;
 use tokio;
 
@@ -19,7 +22,31 @@ enum NodeType {
 #[derive(Debug, Clone)]
 pub(crate) struct Router {
     name: String,
-    fd: RawFd,
+    file_path: String,
+}
+
+impl Router {
+    /// Runs the commands inside the
+    /// router namespace.
+    async fn run<F, T>(&self, f: F) -> std::io::Result<()>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Future<Output = ()> + Send,
+    {
+        let current_thread_path = format!("/proc/self/task/{}/ns/net", gettid());
+        let current_thread_file = File::open(&current_thread_path).unwrap();
+
+        let ns_file = File::open(self.file_path.as_str()).unwrap();
+
+        // move into router namespace
+        setns(ns_file.as_fd(), CloneFlags::CLONE_NEWNET).unwrap();
+        let _ = (f)().await;
+
+        // come back to parent namespace
+        setns(current_thread_file.as_fd(), CloneFlags::CLONE_NEWNET).unwrap();
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -209,11 +236,25 @@ impl Topology {
         }
         ns_path.push_str(NETNS_PATH);
         ns_path.push_str(name);
-        let f = File::open(ns_path)?;
-        Ok(Router {
+        let router = Router {
             name: name.to_string(),
-            fd: f.as_raw_fd(),
-        })
+            file_path: ns_path,
+        };
+
+        // run command inside the router's namespace
+        router
+            .run(move || async move {
+                let (connection, handle, _) = new_connection().unwrap();
+                tokio::spawn(connection);
+                handle
+                    .link()
+                    .add(LinkBridge::new("cool").build())
+                    .execute()
+                    .await
+                    .unwrap();
+            })
+            .await;
+        Ok(router)
     }
 
     pub(crate) async fn add_switch(&self, name: &str) -> IoResult<Switch> {

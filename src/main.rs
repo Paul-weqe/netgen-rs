@@ -2,12 +2,7 @@
 mod devices;
 mod topology;
 
-use nix::sched::setns;
-use nix::sched::CloneFlags;
-use nix::unistd::gettid;
 use std::collections::BTreeSet;
-use std::fs::File;
-use std::os::fd::AsFd;
 use topology::Topology;
 
 pub(crate) type Index = libc::c_uint;
@@ -27,25 +22,4 @@ async fn main() {
     topology.add_routers(routers).await;
     topology.add_switches(switches).await;
     topology.add_links(links).await;
-}
-
-/// Runs the commands inside the
-/// namespace specified.
-fn _in_namespace<F, T>(ns_path: &str, f: F) -> std::io::Result<T>
-where
-    F: FnOnce() -> T,
-{
-    let current_thread_path = format!("/proc/self/task/{}/ns/net", gettid());
-    let current_thread_file = File::open(&current_thread_path).unwrap();
-
-    let ns_file = File::open(ns_path).unwrap();
-
-    // move into namespace
-    setns(ns_file.as_fd(), CloneFlags::CLONE_NEWNET).unwrap();
-    let result = f();
-
-    // come back to default namespace
-    setns(current_thread_file.as_fd(), CloneFlags::CLONE_NEWNET).unwrap();
-
-    Ok(result)
 }
