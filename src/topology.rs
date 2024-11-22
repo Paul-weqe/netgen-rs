@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::future::Future;
 use std::io::{Error as IoError, ErrorKind, Result as IoResult};
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, AsRawFd};
 use std::process::Command;
 use tokio;
 
@@ -333,20 +333,70 @@ impl Topology {
         if let Some(node_1) = self.node_exists(src_node)
             && let Some(node_2) = self.node_exists(dst_node)
         {
-            // set the link types
-            let lt1: &str = &node_1.link_type();
-            let lt2: &str = &node_2.link_type();
+            match node_1 {
+                // attaches the first link to its respective interface
+                // device
+                Node::Router(router) => {
+                    if let Ok(index) = if_nametoindex(src_iface) {
+                        let file = File::open(router.file_path.as_str()).unwrap();
+                        self.handle
+                            .link()
+                            .set(index)
+                            .setns_by_fd(file.as_raw_fd())
+                            .execute()
+                            .await
+                            .unwrap();
+                    }
+                }
+                Node::Switch(switch) => {
+                    if let Ok(index) = if_nametoindex(src_iface) {
+                        self.handle
+                            .link()
+                            .set(index)
+                            .controller(switch.ifindex)
+                            .execute()
+                            .await
+                            .unwrap();
+                        // TODO: Handle the error in case of a problem while setting the MASTER
+                    }
+                }
+            }
 
-            let _ = Command::new("ip")
-                .args(["link", "set", src_iface, lt1, src_node])
-                .output();
-            let _ = Command::new("ip")
-                .args(["link", "set", dst_iface, lt2, dst_node])
-                .output();
-
-            // ensure the interfaces are in the up state
-            let _ = node_1.up(&self.handle, src_iface.to_string()).await;
-            let _ = node_2.up(&self.handle, dst_iface.to_string()).await;
+            // attaches the second link to its respective interface
+            // device.
+            // Also, during the bringing up of the veth interface above,
+            // only the src_iface changes the admin state to up. So we
+            // manually have to set dst_iface state as up
+            match node_2 {
+                Node::Router(router) => {
+                    if let Ok(index) = if_nametoindex(dst_iface) {
+                        // bring up the link endpoint
+                        self.handle.link().set(index).up().execute().await.unwrap();
+                        let file = File::open(router.file_path.as_str()).unwrap();
+                        self.handle
+                            .link()
+                            .set(index)
+                            .setns_by_fd(file.as_raw_fd())
+                            .execute()
+                            .await
+                            .unwrap();
+                    }
+                }
+                Node::Switch(switch) => {
+                    if let Ok(index) = if_nametoindex(dst_iface) {
+                        // bring up the link endpoint
+                        self.handle.link().set(index).up().execute().await.unwrap();
+                        self.handle
+                            .link()
+                            .set(index)
+                            .controller(switch.ifindex)
+                            .execute()
+                            .await
+                            .unwrap();
+                        // TODO: Handle the error in case of a problem while setting the MASTER
+                    }
+                }
+            }
 
             Ok(Link {
                 src_name: src_node.to_string(),
