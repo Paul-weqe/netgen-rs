@@ -1,9 +1,10 @@
 use crate::Index;
+use netlink_packet_route::link::LinkFlag;
 use nix::net::if_::if_nametoindex;
 use nix::sched::setns;
 use nix::sched::CloneFlags;
 use nix::unistd::gettid;
-use rtnetlink::{new_connection, Handle, LinkBridge, LinkVeth, NetworkNamespace, NETNS_PATH};
+use rtnetlink::{new_connection, Handle, NetworkNamespace, NETNS_PATH};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::future::Future;
@@ -11,17 +12,6 @@ use std::io::{Error as IoError, ErrorKind, Result as IoResult};
 use std::os::fd::AsFd;
 use std::process::Command;
 use tokio;
-
-pub trait BaseNode {
-    /// method is used to bring up a device's interface.
-    /// if it is a switch, the iface_name will be irrelevant, the
-    /// switche's name will be used.
-    ///
-    /// If it is a router, the handle will not be important
-    /// since we will go into the routers namespace and create
-    /// a custom handle in there.
-    async fn up(&self, handle: &Handle, iface_name: String) -> IoResult<()>;
-}
 
 #[derive(Debug, Clone)]
 pub struct Router {
@@ -113,13 +103,11 @@ impl Router {
     async fn up(&self, iface_name: String) -> IoResult<()> {
         let result = self
             .run(move || async move {
-                if let Ok((connection, handle, _)) = new_connection() {
+                if let Ok(ifindex) = if_nametoindex(iface_name.as_str())
+                    && let Ok((connection, handle, _)) = new_connection()
+                {
                     tokio::spawn(connection);
-                    let _ = handle
-                        .link()
-                        .set(LinkBridge::new(&iface_name).up().build())
-                        .execute()
-                        .await;
+                    let _ = handle.link().set(ifindex).up().execute().await;
                 }
                 // TODO: add error catcher in case
                 // of problems when bringing the interface up
@@ -138,12 +126,9 @@ pub struct Switch {
 
 impl Switch {
     async fn new(handle: &Handle, name: &str) -> IoResult<Self> {
-        if let Err(err) = handle
-            .link()
-            .add(LinkBridge::new(name).up().build())
-            .execute()
-            .await
-        {
+        let mut request = handle.link().add().bridge(name.into());
+        request.message_mut().header.flags.push(LinkFlag::Up);
+        if let Err(err) = request.execute().await {
             let e = format!("problem creating bridge {name}\n {:#?}", err);
             return Err(IoError::new(ErrorKind::Other, e.as_str()));
         }
@@ -155,23 +140,19 @@ impl Switch {
     }
 
     async fn up(&self, handle: &Handle) -> IoResult<()> {
-        let _ = handle
-            .link()
-            .set(LinkBridge::new(&self.name).up().build())
-            .execute()
-            .await;
+        let _ = handle.link().set(self.ifindex).up().execute().await;
         // TODO: error handling for when bringing the interface up does not work.
         Ok(())
     }
 }
 
 #[derive(Debug, Clone)]
-enum NodeType {
+enum Node {
     Router(Router),
     Switch(Switch),
 }
 
-impl NodeType {
+impl Node {
     /// gets the link types that will be used to create
     /// the nodes.
     ///
@@ -221,7 +202,7 @@ impl Link {
 
 pub struct Topology {
     handle: Handle,
-    nodes: BTreeMap<String, NodeType>,
+    nodes: BTreeMap<String, Node>,
     links: Vec<Link>,
 }
 
@@ -247,8 +228,7 @@ impl Topology {
         println!("adding routers...");
         for name in routers {
             let router = Router::new(name).await.unwrap();
-            self.nodes
-                .insert(name.to_string(), NodeType::Router(router));
+            self.nodes.insert(name.to_string(), Node::Router(router));
         }
     }
 
@@ -256,8 +236,7 @@ impl Topology {
         println!("adding switches....");
         for name in switches {
             let switch = Switch::new(&self.handle, name).await.unwrap();
-            self.nodes
-                .insert(name.to_string(), NodeType::Switch(switch));
+            self.nodes.insert(name.to_string(), Node::Switch(switch));
         }
     }
 
@@ -312,12 +291,12 @@ impl Topology {
 
     /// Tells you whether a node of a specific name exists
     /// If it exists, it lets you know what the type of the node is
-    fn node_exists(&self, node_name: &str) -> Option<&NodeType> {
+    fn node_exists(&self, node_name: &str) -> Option<&Node> {
         // look through the switches and routers
         if let Some(node) = self.nodes.get(node_name) {
             match node {
-                NodeType::Router(_) => return Some(&node),
-                NodeType::Switch(_) => return Some(&node),
+                Node::Router(_) => return Some(&node),
+                Node::Switch(_) => return Some(&node),
             }
         }
         None
@@ -336,13 +315,14 @@ impl Topology {
         dst_iface: &str,
     ) -> IoResult<Link> {
         // create the link
-        if let Err(err) = self
+        let mut request = self
             .handle
             .link()
-            .add(LinkVeth::new(src_iface, dst_iface).build())
-            .execute()
-            .await
-        {
+            .add()
+            .veth(src_iface.into(), dst_iface.into());
+        request.message_mut().header.flags.push(LinkFlag::Up);
+
+        if let Err(err) = request.execute().await {
             let e = format!(
                 "problem creating veth link [{src_node}:{src_iface} - {dst_node}:{dst_iface}]\n {:#?}",
                 err

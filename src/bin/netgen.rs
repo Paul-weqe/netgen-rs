@@ -5,13 +5,16 @@ pub(crate) type Index = libc::c_uint;
 
 #[tokio::main]
 async fn main() {
-    let routers = BTreeSet::from(["r1", "r2", "r3"]);
-    let switches = BTreeSet::from(["sw"]);
+    // ------                   -------                    ------
+    // | r1 | eth0 ------- eth1 | br1 | eth2 -------- eth3 | r2 |
+    // ------                   -------                    ------
+    //
+    let routers = BTreeSet::from(["r1", "r2"]);
+    let switches = BTreeSet::from(["br1"]);
 
     let links = vec![
-        vec!["r1", "eth-r1", "sw", "eth0"],
-        vec!["r2", "eth-r2", "sw", "eth1"],
-        vec!["r3", "eth-r3", "sw", "eth2"],
+        vec!["r1", "eth0", "br1", "eth1"],
+        vec!["r2", "eth3", "br1", "eth2"],
     ];
     let mut topology = Topology::new();
 

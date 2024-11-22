@@ -2,11 +2,15 @@
 name = "netgen"
 version = "0.1.0"
 edition = "2021"
+authors = ["Paul Wekesa <paul1tw1@gmail.com>"]
+repository = "https://github.com/Paul-weqe/netgen-rs"
+license = "MIT"
+keywords = ["network-testing", "namespace", "network", "automation"]
 
 [dependencies]
 yaml-rust2 = "0.9.0"
 nix = { version = "0.29.0", features = ["sched", "net"] }
-rtnetlink = { version="0.14.1", path="../rtnetlink", features = ["tokio_socket", "smol_socket"]}
+rtnetlink = { version = "0.14.1", features = ["tokio_socket", "smol_socket"] }
 netlink-packet-route = "0.19"
 tokio = { version = "1.41.1", features = ["full"] }
 libc = "0.2.164"
