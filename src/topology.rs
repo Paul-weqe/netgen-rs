@@ -13,10 +13,15 @@ use std::os::fd::AsFd;
 use std::process::Command;
 use tokio;
 
-#[derive(PartialEq, EnumAsInner)]
-enum NodeType {
-    Router,
-    Switch,
+pub trait BaseNode {
+    /// method is used to bring up a device's interface.
+    /// if it is a switch, the iface_name will be irrelevant, the
+    /// switche's name will be used.
+    ///
+    /// If it is a router, the handle will not be important
+    /// since we will go into the routers namespace and create
+    /// a custom handle in there.
+    async fn up(&self, handle: &Handle, iface_name: String) -> IoResult<()>;
 }
 
 #[derive(Debug, Clone)]
@@ -74,19 +79,59 @@ pub struct Switch {
     ifindex: Index,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum LinkType {
-    RouterToRouter,
-    RouterToSwitch,
-    SwitchToRouter,
-    SwitchToSwitch,
+impl Switch {
+    async fn up(&self, handle: &Handle) -> IoResult<()> {
+        handle
+            .link()
+            .set(LinkBridge::new(&self.name).up().build())
+            .execute()
+            .await;
+        // TODO: error handling for when bringing the interface up does not work.
+        Ok(())
+    }
 }
+
+#[derive(Debug, Clone)]
+enum NodeType {
+    Router(Router),
+    Switch(Switch),
+}
+
+impl NodeType {
+    /// gets the link types that will be used to create
+    /// the nodes.
+    ///
+    /// e.g for router the link type will be netns
+    /// since it's own namespace will be created
+    pub fn link_type(&self) -> String {
+        match self {
+            Self::Router(_) => String::from("netns"),
+            Self::Switch(_) => String::from("master"),
+        }
+    }
+
+    /// Brings the device up.
+    ///
+    /// if it is a router, we specify the interface name that is
+    /// to be brought up. the handle will be created custom for
+    /// the router's namespace.
+    ///
+    /// If it is a switch, we specify the handle, but since the switch
+    /// is a bridge device and we already have the interface name, we
+    /// only use that for the switch.
+    pub async fn up(&self, handle: &Handle, iface_name: String) -> IoResult<()> {
+        match self {
+            Self::Router(router) => router.up(iface_name).await,
+            Self::Switch(switch) => switch.up(handle).await,
+        }
+    }
+}
+
 pub(crate) struct Link {
     src_name: String,
     src_iface: String,
     dst_name: String,
     dst_iface: String,
-    link_type: LinkType,
 }
 
 impl Link {
@@ -102,8 +147,7 @@ impl Link {
 
 pub struct Topology {
     handle: Handle,
-    routers: BTreeMap<String, Router>,
-    switches: BTreeMap<String, Switch>,
+    nodes: BTreeMap<String, NodeType>,
     links: Vec<Link>,
 }
 
@@ -113,8 +157,7 @@ impl Topology {
         tokio::spawn(connection);
         Self {
             handle,
-            routers: BTreeMap::new(),
-            switches: BTreeMap::new(),
+            nodes: BTreeMap::new(),
             links: vec![],
         }
     }
@@ -127,9 +170,11 @@ impl Topology {
     ///
     /// use of BTreeSet is to ensure each of the strings is unique
     pub(crate) async fn add_routers(&mut self, routers: BTreeSet<&str>) {
+        println!("adding routers...");
         for name in routers {
             let router = self.add_router(name).await.unwrap();
-            self.routers.insert(name.to_string(), router);
+            self.nodes
+                .insert(name.to_string(), NodeType::Router(router));
         }
     }
 
@@ -137,7 +182,8 @@ impl Topology {
         println!("adding switches....");
         for name in switches {
             let switch = self.add_switch(name).await.unwrap();
-            self.switches.insert(name.to_string(), switch);
+            self.nodes
+                .insert(name.to_string(), NodeType::Switch(switch));
         }
     }
 
@@ -165,50 +211,7 @@ impl Topology {
                 );
                 continue;
             }
-
-            // make sure the hosts exist
-            let node_1_exists = self.node_exists(&link[0]).await;
-            let node_2_exists = self.node_exists(&link[2]).await;
-
-            if let Some(node_type1) = &node_1_exists
-                && let Some(node_type2) = &node_2_exists
-            {
-                let mut link_type: Option<LinkType> = None;
-                if node_type1.is_router() && node_type2.is_switch() {
-                    link_type = Some(LinkType::RouterToRouter);
-                } else if node_type1.is_router() && node_type2.is_switch() {
-                    link_type = Some(LinkType::RouterToSwitch);
-                } else if node_type1.is_switch() && node_type2.is_router() {
-                    link_type = Some(LinkType::SwitchToRouter);
-                } else if node_type1.is_switch() && node_type2.is_switch() {
-                    link_type = Some(LinkType::SwitchToSwitch);
-                }
-
-                if let Some(link_type) = link_type {
-                    let link = self
-                        .add_link(&link[0], &link[1], &link[2], &link[3], link_type)
-                        .await
-                        .unwrap();
-                    self.links.push(link);
-                    continue;
-                }
-            }
-
-            // print out when either the first node does not exist
-            // or the second node does not exist
-            if node_1_exists.is_none() {
-                println!(
-                    "Problem creating link [{}:{}]-[{}:{}]. Node {} does not exist",
-                    link[0], link[1], link[2], link[3], link[0]
-                );
-                continue;
-            } else if node_2_exists.is_none() {
-                println!(
-                    "Problem creating link [{}:{}]-[{}:{}]. Node {} does not exist",
-                    link[0], link[1], link[2], link[3], link[3]
-                );
-                continue;
-            }
+            self.add_link(&link[0], &link[1], &link[2], &link[3]).await;
         }
     }
 
@@ -234,13 +237,13 @@ impl Topology {
 
     /// Tells you whether a node of a specific name exists
     /// If it exists, it lets you know what the type of the node is
-    async fn node_exists(&self, node_name: &str) -> Option<NodeType> {
+    fn node_exists(&self, node_name: &str) -> Option<&NodeType> {
         // look through the switches and routers
-        if self.routers.get(node_name).is_some() {
-            return Some(NodeType::Router);
-        }
-        if self.switches.get(node_name).is_some() {
-            return Some(NodeType::Switch);
+        if let Some(node) = self.nodes.get(node_name) {
+            match node {
+                NodeType::Router(_) => return Some(&node),
+                NodeType::Switch(_) => return Some(&node),
+            }
         }
         None
     }
@@ -261,7 +264,7 @@ impl Topology {
         };
 
         // bring the loopback interface of the router up
-        router.up(String::from("lo"));
+        router.up(String::from("lo")).await;
         Ok(router)
     }
 
@@ -294,7 +297,6 @@ impl Topology {
         src_iface: &str,
         dst_node: &str,
         dst_iface: &str,
-        link_type: LinkType,
     ) -> IoResult<Link> {
         // create the link
         if let Err(err) = self
@@ -311,42 +313,36 @@ impl Topology {
             return Err(IoError::new(ErrorKind::Other, e.as_str()));
         }
 
-        let lt1: &str;
-        let lt2: &str;
+        if let Some(node_1) = self.node_exists(src_node)
+            && let Some(node_2) = self.node_exists(dst_node)
+        {
+            // set the link types
+            let lt1: &str = &node_1.link_type();
+            let lt2: &str = &node_2.link_type();
 
-        match link_type {
-            LinkType::RouterToRouter => {
-                lt1 = "netns";
-                lt2 = "netns";
-            }
-            LinkType::RouterToSwitch => {
-                lt1 = "netns";
-                lt2 = "master";
-            }
-            LinkType::SwitchToRouter => {
-                lt1 = "master";
-                lt2 = "netns";
-            }
-            LinkType::SwitchToSwitch => {
-                lt1 = "master";
-                lt2 = "master";
-            }
+            let _ = Command::new("ip")
+                .args(["link", "set", src_iface, lt1, src_node])
+                .output();
+            let _ = Command::new("ip")
+                .args(["link", "set", dst_iface, lt2, dst_node])
+                .output();
+
+            // ensure the interfaces are in the up state
+            node_1.up(&self.handle, src_iface.to_string()).await;
+            node_2.up(&self.handle, dst_iface.to_string()).await;
+
+            Ok(Link {
+                src_name: src_node.to_string(),
+                src_iface: src_iface.to_string(),
+                dst_name: dst_node.to_string(),
+                dst_iface: dst_iface.to_string(),
+            })
+        } else {
+            let err = format!(
+                "One of the nodes [{}] or [{}] does not exist in the topology",
+                src_node, dst_node
+            );
+            return Err(IoError::new(ErrorKind::Other, err.as_str()));
         }
-
-        let _ = Command::new("ip")
-            .args(["link", "set", src_iface, lt1, src_node])
-            .output();
-
-        let _ = Command::new("ip")
-            .args(["link", "set", dst_iface, lt2, dst_node])
-            .output();
-
-        Ok(Link {
-            src_name: src_node.to_string(),
-            src_iface: src_iface.to_string(),
-            dst_name: dst_node.to_string(),
-            dst_iface: dst_iface.to_string(),
-            link_type,
-        })
     }
 }
