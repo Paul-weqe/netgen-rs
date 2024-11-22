@@ -20,7 +20,7 @@ enum NodeType {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Router {
+pub struct Router {
     name: String,
     file_path: String,
 }
@@ -28,10 +28,10 @@ pub(crate) struct Router {
 impl Router {
     /// Runs the commands inside the
     /// router namespace.
-    async fn run<F, T>(&self, f: F) -> std::io::Result<()>
+    async fn run<F, T, R>(&self, f: F) -> IoResult<R>
     where
         F: FnOnce() -> T + Send + 'static,
-        T: Future<Output = ()> + Send,
+        T: Future<Output = R> + Send,
     {
         let current_thread_path = format!("/proc/self/task/{}/ns/net", gettid());
         let current_thread_file = File::open(&current_thread_path).unwrap();
@@ -40,17 +40,36 @@ impl Router {
 
         // move into router namespace
         setns(ns_file.as_fd(), CloneFlags::CLONE_NEWNET).unwrap();
-        let _ = (f)().await;
+        let result = (f)().await;
 
         // come back to parent namespace
         setns(current_thread_file.as_fd(), CloneFlags::CLONE_NEWNET).unwrap();
 
-        Ok(())
+        Ok(result)
+    }
+
+    async fn up(&self, iface_name: String) -> IoResult<()> {
+        let result = self
+            .run(move || async move {
+                if let Ok((connection, handle, _)) = new_connection() {
+                    tokio::spawn(connection);
+                    let request = handle
+                        .link()
+                        .set(LinkBridge::new(&iface_name).up().build())
+                        .execute()
+                        .await;
+                }
+                // TODO: add error catcher in case
+                // of problems when bringing the interface up
+                Ok(())
+            })
+            .await;
+        return result?;
     }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Switch {
+pub struct Switch {
     name: String,
     ifindex: Index,
 }
@@ -241,19 +260,8 @@ impl Topology {
             file_path: ns_path,
         };
 
-        // run command inside the router's namespace
-        router
-            .run(move || async move {
-                let (connection, handle, _) = new_connection().unwrap();
-                tokio::spawn(connection);
-                handle
-                    .link()
-                    .add(LinkBridge::new("cool").build())
-                    .execute()
-                    .await
-                    .unwrap();
-            })
-            .await;
+        // bring the loopback interface of the router up
+        router.up(String::from("lo"));
         Ok(router)
     }
 
