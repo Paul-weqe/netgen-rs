@@ -1,4 +1,5 @@
 use crate::devices::{Link, Node, Router, Switch};
+use crate::plugins::Config;
 
 use netlink_packet_route::link::LinkFlag;
 use nix::net::if_::if_nametoindex;
@@ -12,6 +13,7 @@ use tokio;
 use yaml_rust2::yaml::Yaml;
 use yaml_rust2::YamlLoader;
 
+#[derive(Debug)]
 pub struct Topology {
     handle: Handle,
     // String holds the nodename(),
@@ -31,14 +33,14 @@ impl Topology {
         }
     }
 
-    pub async fn from_yaml_file(file_path: &str) -> IoResult<Self> {
+    pub async fn from_yaml_file(file_path: &str, config: Option<Config>) -> IoResult<Self> {
         let mut f = File::open(file_path).unwrap();
         let mut contents = String::new();
         let _ = f.read_to_string(&mut contents);
-        Self::from_yaml_str(contents.as_str()).await
+        Self::from_yaml_str(contents.as_str(), config).await
     }
 
-    pub async fn from_yaml_str(yaml_str: &str) -> IoResult<Self> {
+    pub async fn from_yaml_str(yaml_str: &str, config: Option<Config>) -> IoResult<Self> {
         let (connection, handle, _) = new_connection().unwrap();
         tokio::spawn(connection);
         let mut topology = Self {
@@ -50,19 +52,25 @@ impl Topology {
         // TODO: handle the unwrap() below
         let yaml_content = YamlLoader::load_from_str(yaml_str).unwrap();
         for yaml_group in yaml_content {
-            topology.parse_topology_config(&yaml_group).await;
+            topology.parse_topology_config(&yaml_group, &config).await;
         }
         Ok(topology)
     }
 
-    pub async fn parse_topology_config(&mut self, yaml_data: &Yaml) {
+    pub async fn parse_topology_config(&mut self, yaml_data: &Yaml, config: &Option<Config>) {
         if let Yaml::Hash(topo_config_group) = yaml_data {
             // fetch the routers
             if let Some(routers_configs) =
                 topo_config_group.get(&Yaml::String(String::from("routers")))
             {
                 // TODO: handle the unwrap below
-                let routers = self.parse_router_configs(routers_configs).await.unwrap();
+                if let Ok(routers) = self.parse_router_configs(routers_configs, config).await {
+                    for router in routers {
+                        self.nodes.insert(router.name.clone(), Node::Router(router));
+                    }
+                } else {
+                    // TODO: handle errors thrown when fetching the routers.
+                }
             }
 
             // fetch the switches
@@ -70,27 +78,43 @@ impl Topology {
                 topo_config_group.get(&Yaml::String(String::from("switches")))
             {
                 // TODO: handle the unwrap below
-                let switches = self.parse_switch_configs(switches_configs).await.unwrap();
+                if let Ok(switches) = self.parse_switch_configs(switches_configs).await {
+                    for switch in switches {
+                        self.nodes.insert(switch.name.clone(), Node::Switch(switch));
+                    }
+                } else {
+                    // TODO: handle errors thrown when fetching the switches
+                }
             }
 
             // fetch the links
             if let Some(links_configs) = topo_config_group.get(&Yaml::String(String::from("links")))
             {
                 // TODO: handle the unwrap below
-                let links = self.parse_links_configs(links_configs).await.unwrap();
+                if let Ok(links) = self.parse_links_configs(links_configs).await {
+                    for link in links {
+                        self.links.push(link);
+                    }
+                }
             }
         }
     }
 
-    pub async fn parse_router_configs(&self, routers_config: &Yaml) -> IoResult<Vec<Router>> {
+    pub async fn parse_router_configs(
+        &self,
+        routers_config: &Yaml,
+        config: &Option<Config>,
+    ) -> IoResult<Vec<Router>> {
         let mut routers: Vec<Router> = vec![];
         if let Yaml::Hash(configs) = routers_config {
             for (router_name, router_config) in configs {
                 if let Yaml::String(router_name) = router_name
                     && let Yaml::Hash(router_config) = router_config
                 {
-                    let router = Router::new_from_yaml_config(&router_name, &router_config);
-                    println!("{:#?}", router);
+                    if let Ok(router) = Router::from_yaml_config(router_name, router_config, config)
+                    {
+                        routers.push(router);
+                    }
                 } else {
                     // TODO: handle a case where the router_name is not a string
                     // or the router_config is not a Yaml::Hash
@@ -102,11 +126,50 @@ impl Topology {
 
     pub async fn parse_switch_configs(&self, switches_configs: &Yaml) -> IoResult<Vec<Switch>> {
         let mut switches: Vec<Switch> = vec![];
+        if let Yaml::Hash(configs) = switches_configs {
+            for (switch_name, switch_config) in configs {
+                if let Yaml::String(switch_name) = switch_name
+                    && let Yaml::Hash(switch_config) = switch_config
+                {
+                    if let Ok(switch) = Switch::from_yaml_config(switch_name, switch_config) {
+                        switches.push(switch);
+                    } else {
+                        // TODO: handle a case where switch_name is not a string
+                        // or the switch config is not a Yaml::Hash
+                    }
+                }
+            }
+        }
         Ok(switches)
     }
 
     pub async fn parse_links_configs(&self, links_configs: &Yaml) -> IoResult<Vec<Link>> {
         let mut links: Vec<Link> = vec![];
+        if let Yaml::Array(configs) = links_configs {
+            for link_config in configs {
+                if let Yaml::Hash(link_config) = link_config {
+                    if let Some(Yaml::String(src)) =
+                        link_config.get(&Yaml::String(String::from("src")))
+                        && let Some(Yaml::String(src_iface)) =
+                            link_config.get(&Yaml::String(String::from("src-iface")))
+                        && let Some(Yaml::String(dst)) =
+                            link_config.get(&Yaml::String(String::from("dst")))
+                        && let Some(Yaml::String(dst_iface)) =
+                            link_config.get(&Yaml::String(String::from("dst-iface")))
+                    {
+                        let link = Link {
+                            src_name: src.to_string(),
+                            src_iface: src_iface.to_string(),
+                            dst_name: dst.to_string(),
+                            dst_iface: dst_iface.to_string(),
+                        };
+                        links.push(link);
+                    } else {
+                        // TODO: throw error when either of the link configs is off
+                    }
+                }
+            }
+        }
         Ok(links)
     }
 
@@ -127,7 +190,7 @@ impl Topology {
     /// Cretes the beidges for the respective switches.  
     pub async fn add_switches(&mut self, switches: BTreeSet<&str>) {
         for name in switches {
-            let switch = Switch::new(&self.handle, name).await.unwrap();
+            let switch = Switch::new(name);
             self.nodes.insert(name.to_string(), Node::Switch(switch));
         }
     }
@@ -233,12 +296,14 @@ impl Topology {
                     }
                 }
                 Node::Switch(switch) => {
-                    if let Ok(index) = if_nametoindex(src_iface) {
+                    if let Ok(index) = if_nametoindex(src_iface)
+                        && let Some(ifindex) = switch.ifindex
+                    {
                         self.handle.link().set(index).up().execute().await.unwrap();
                         self.handle
                             .link()
                             .set(index)
-                            .controller(switch.ifindex)
+                            .controller(ifindex)
                             .execute()
                             .await
                             .unwrap();
@@ -269,13 +334,15 @@ impl Topology {
                     }
                 }
                 Node::Switch(switch) => {
-                    if let Ok(index) = if_nametoindex(dst_iface) {
+                    if let Ok(index) = if_nametoindex(dst_iface)
+                        && let Some(ifindex) = switch.ifindex
+                    {
                         // bring up the link endpoint
                         self.handle.link().set(index).up().execute().await.unwrap();
                         self.handle
                             .link()
                             .set(index)
-                            .controller(switch.ifindex)
+                            .controller(ifindex)
                             .execute()
                             .await
                             .unwrap();
