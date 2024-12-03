@@ -1,0 +1,50 @@
+
+routers:
+  rt1:
+    plugin: holo
+    interfaces:
+      lo: 
+        ipv4:
+          - 1.1.1.1/32
+        ipv6:
+          - 2001:db8:1066::1/128
+      eth0:
+        ipv4:
+          - 192.168.100.1/24
+          - 192.168.200.1/24
+
+
+  rt3:
+    plugin: holo
+    interfaces:
+      lo: 
+        ipv4:
+          - 2.2.2.2/32 
+      eth0:
+        ipv4:
+          - 192.168.100.2/24
+          - 192.168.200.2/24
+
+switches:
+  sw1:
+    interfaces:
+      lo:
+        ipv4:
+          - 3.3.3.3/24 
+        ipv6:
+          - 2001:db8:1066::1/128
+      eth0:
+        ipv4:
+          - 192.168.20.2/24
+          - 192.168.30.3/24
+
+links:
+  - src: rt1
+    src-iface: eth0 
+    dst: rt2 
+    dst-iface: eth0
+
+  - src: rt2
+    src-iface: eth2 
+    dst: rt1 
+    dst-iface: eth2

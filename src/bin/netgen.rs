@@ -1,24 +1,20 @@
+use netgen::plugins::yaml_parse_config_contents;
 use netgen::topology::Topology;
 use std::collections::BTreeSet;
-
-pub(crate) type Index = libc::c_uint;
+use std::fs::File;
+use std::io::Read;
+use yaml_rust2::YamlLoader;
 
 #[tokio::main]
 async fn main() {
-    // ------                   -------                    ------
-    // | r1 | eth0 ------- eth1 | br1 | eth2 -------- eth3 | r2 |
-    // ------                   -------                    ------
+    let t = Topology::from_yaml_file("./assets/sample-top.yml").await;
+    //let mut f = File::open("./assets/config.yaml").unwrap();
+    //let mut contents = String::new();
+    //let _ = f.read_to_string(&mut contents);
+    //let d = YamlLoader::load_from_str(contents.as_str()).unwrap();
     //
-    let routers = BTreeSet::from(["r1", "r2"]);
-    let switches = BTreeSet::from(["br1"]);
-
-    let links = vec![
-        vec!["r1", "eth0", "br1", "eth1"],
-        vec!["r2", "eth3", "br1", "eth2"],
-    ];
-    let mut topology = Topology::new();
-
-    topology.add_routers(routers).await;
-    topology.add_switches(switches).await;
-    topology.add_links(links).await;
+    //for x in d {
+    //    let config = yaml_parse_config_contents(&x);
+    //    println!("{:#?}", config);
+    //}
 }

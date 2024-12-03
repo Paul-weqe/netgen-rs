@@ -1,0 +1,8 @@
+plugins:
+  holo:
+    daemon: /home/waswa/projects/rust/holo/target/debug/holod 
+    cli-path:  /home/waswa/projects/rust/holo-cli//target/debug/holo-cli
+
+  # frr:
+  #   daemon: /home/waswa/frrd 
+  #   cli-path: /home/waswa/frr-cli

@@ -1,4 +1,4 @@
 #![feature(let_chains)]
+pub mod devices;
+pub mod plugins;
 pub mod topology;
-
-pub(crate) type Index = libc::c_uint;
