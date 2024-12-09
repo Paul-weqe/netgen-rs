@@ -33,14 +33,13 @@ impl Topology {
         }
     }
 
-    pub async fn from_yaml_file(file_path: &str, config: Option<Config>) -> IoResult<Self> {
-        let mut f = File::open(file_path).unwrap();
+    pub fn from_yaml_file(file: &mut File, config: Option<Config>) -> IoResult<Self> {
         let mut contents = String::new();
-        let _ = f.read_to_string(&mut contents);
-        Self::from_yaml_str(contents.as_str(), config).await
+        let _ = file.read_to_string(&mut contents);
+        Self::from_yaml_str(contents.as_str(), config)
     }
 
-    pub async fn from_yaml_str(yaml_str: &str, config: Option<Config>) -> IoResult<Self> {
+    pub fn from_yaml_str(yaml_str: &str, config: Option<Config>) -> IoResult<Self> {
         let (connection, handle, _) = new_connection().unwrap();
         tokio::spawn(connection);
         let mut topology = Self {
@@ -52,20 +51,30 @@ impl Topology {
         // TODO: handle the unwrap() below
         let yaml_content = YamlLoader::load_from_str(yaml_str).unwrap();
         for yaml_group in yaml_content {
-            topology.parse_topology_config(&yaml_group, &config).await;
+            topology.parse_topology_config(&yaml_group, &config)?;
         }
         Ok(topology)
     }
 
-    pub async fn parse_topology_config(&mut self, yaml_data: &Yaml, config: &Option<Config>) {
+    pub fn parse_topology_config(
+        &mut self,
+        yaml_data: &Yaml,
+        config: &Option<Config>,
+    ) -> IoResult<()> {
         if let Yaml::Hash(topo_config_group) = yaml_data {
             // fetch the routers
             if let Some(routers_configs) =
                 topo_config_group.get(&Yaml::String(String::from("routers")))
             {
                 // TODO: handle the unwrap below
-                if let Ok(routers) = self.parse_router_configs(routers_configs, config).await {
+                if let Ok(routers) = self.parse_router_configs(routers_configs, config) {
                     for router in routers {
+                        // check if router exists
+                        if self.nodes.contains_key(&router.name) {
+                            let err =
+                                format!("Node {} has been configured more than once", router.name);
+                            return Err(IoError::new(ErrorKind::Other, err.as_str()));
+                        }
                         self.nodes.insert(router.name.clone(), Node::Router(router));
                     }
                 } else {
@@ -78,8 +87,13 @@ impl Topology {
                 topo_config_group.get(&Yaml::String(String::from("switches")))
             {
                 // TODO: handle the unwrap below
-                if let Ok(switches) = self.parse_switch_configs(switches_configs).await {
+                if let Ok(switches) = self.parse_switch_configs(switches_configs) {
                     for switch in switches {
+                        if self.nodes.contains_key(&switch.name) {
+                            let err =
+                                format!("Node {} has been configured more than once", switch.name);
+                            return Err(IoError::new(ErrorKind::Other, err.as_str()));
+                        }
                         self.nodes.insert(switch.name.clone(), Node::Switch(switch));
                     }
                 } else {
@@ -90,17 +104,42 @@ impl Topology {
             // fetch the links
             if let Some(links_configs) = topo_config_group.get(&Yaml::String(String::from("links")))
             {
-                // TODO: handle the unwrap below
-                if let Ok(links) = self.parse_links_configs(links_configs).await {
+                if let Ok(links) = self.parse_links_configs(links_configs) {
                     for link in links {
+                        // check if link devices exist in config
+                        if !self.nodes.contains_key(&link.src_name) {
+                            let err = format!(
+                                "src node name {} configured in link {:?} does not exist",
+                                link.src_name, link
+                            );
+                            return Err(IoError::new(ErrorKind::Other, err.as_str()));
+                        }
+                        if !self.nodes.contains_key(&link.dst_name) {
+                            let err = format!(
+                                "src node name {} configured in link {:?} does not exist",
+                                link.src_name, link
+                            );
+                            return Err(IoError::new(ErrorKind::Other, err.as_str()));
+                        }
+
+                        // check if link has already been configured.
+                        if self.link_exists(&link) {
+                            let err = format!(
+                                "link {} <-> {} has been configured more than once",
+                                link.src(),
+                                link.dst()
+                            );
+                            return Err(IoError::new(ErrorKind::Other, err.as_str()));
+                        }
                         self.links.push(link);
                     }
                 }
             }
         }
+        Ok(())
     }
 
-    pub async fn parse_router_configs(
+    pub fn parse_router_configs(
         &self,
         routers_config: &Yaml,
         config: &Option<Config>,
@@ -124,7 +163,7 @@ impl Topology {
         Ok(routers)
     }
 
-    pub async fn parse_switch_configs(&self, switches_configs: &Yaml) -> IoResult<Vec<Switch>> {
+    pub fn parse_switch_configs(&self, switches_configs: &Yaml) -> IoResult<Vec<Switch>> {
         let mut switches: Vec<Switch> = vec![];
         if let Yaml::Hash(configs) = switches_configs {
             for (switch_name, switch_config) in configs {
@@ -143,7 +182,7 @@ impl Topology {
         Ok(switches)
     }
 
-    pub async fn parse_links_configs(&self, links_configs: &Yaml) -> IoResult<Vec<Link>> {
+    pub fn parse_links_configs(&self, links_configs: &Yaml) -> IoResult<Vec<Link>> {
         let mut links: Vec<Link> = vec![];
         if let Yaml::Array(configs) = links_configs {
             for link_config in configs {
@@ -173,6 +212,17 @@ impl Topology {
         Ok(links)
     }
 
+    pub fn link_exists(&self, link: &Link) -> bool {
+        for link2 in &self.links {
+            if (link.src() == link2.src()) && (link.dst() == link2.dst())
+                || ((link.src() == link2.dst()) && (link.dst() == link2.src()))
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Given a list of router names and need to create a new namespace
     /// for each one of them.
     ///
@@ -193,55 +243,6 @@ impl Topology {
             let switch = Switch::new(name);
             self.nodes.insert(name.to_string(), Node::Switch(switch));
         }
-    }
-
-    /// adds the links to the already created routers and switches.
-    ///
-    /// `links` argument is basically a list of all the links that should
-    /// be created. E.g
-    ///
-    /// ------                         -------
-    /// | s1 | eth0 ============= eth1 |  s2 |
-    /// ------                         -------
-    /// Will be in the form of:
-    ///  vec![
-    ///     vec![ "s1", "eth0", "s2", "eth1" ]
-    ///  ]
-    /// where
-    /// [ src_node, src_iface, dst_node, dst_iface ]
-    ///
-    pub async fn add_links(&mut self, links: Vec<Vec<&str>>) {
-        for link in links {
-            // make sure that the link does not exist
-            if self.link_exists(link.clone()) {
-                println!(
-                    "Problem creating link [{}:{}]-[{}:{}]. Link already exists",
-                    link[0], link[1], link[2], link[3]
-                );
-                continue;
-            }
-            let _ = self.add_link(link[0], link[1], link[2], link[3]).await;
-        }
-    }
-
-    fn link_exists(&self, link: Vec<&str>) -> bool {
-        for created_link in &self.links {
-            let created_link = created_link.to_vec();
-            if created_link == link {
-                return true;
-            }
-
-            let l_pair1 = (link[0], link[1]);
-            let l_pair2 = (link[2], link[3]);
-
-            let cl_pair1 = (created_link[0].as_str(), created_link[1].as_str());
-            let cl_pair2 = (created_link[2].as_str(), created_link[3].as_str());
-
-            if (l_pair1 == cl_pair2) || (l_pair2 == cl_pair1) {
-                return true;
-            }
-        }
-        false
     }
 
     /// Tells you whether a node of a specific name exists

@@ -346,12 +346,11 @@ pub struct Link {
 }
 
 impl Link {
-    pub fn to_vec(&self) -> Vec<String> {
-        vec![
-            self.src_name.clone(),
-            self.src_iface.clone(),
-            self.dst_name.clone(),
-            self.dst_iface.clone(),
-        ]
+    pub fn src(&self) -> String {
+        format!("{}:{}", self.src_name, self.src_iface)
+    }
+
+    pub fn dst(&self) -> String {
+        format!("{}:{}", self.dst_name, self.dst_iface)
     }
 }

@@ -22,10 +22,9 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_yaml_file(file_path: &str) -> IoResult<Self> {
-        let mut f = File::open(file_path)?;
+    pub fn from_yaml_file(file: &mut File) -> IoResult<Self> {
         let mut contents = String::new();
-        let _ = f.read_to_string(&mut contents);
+        let _ = file.read_to_string(&mut contents);
         Self::from_yaml_str(contents.as_str())
     }
 
@@ -95,13 +94,13 @@ impl Config {
         let mut holo = Holo::default();
 
         // set holo-daemon path
-        if let Some(daemon_path) = config.get(&Yaml::String(String::from("daemon"))) {
-            holo.daemon_path = daemon_path.clone().into_string().unwrap();
+        if let Some(daemon_dir) = config.get(&Yaml::String(String::from("daemon-dir"))) {
+            holo.daemon_dir = daemon_dir.clone().into_string().unwrap();
         }
 
         // set holod cli path
-        if let Some(cli_path) = config.get(&Yaml::String(String::from("cli-path"))) {
-            holo.cli_path = cli_path.clone().into_string().unwrap();
+        if let Some(cli_dir) = config.get(&Yaml::String(String::from("cli-dir"))) {
+            holo.cli_dir = cli_dir.clone().into_string().unwrap();
         }
 
         // set holod sysconfdir
@@ -124,12 +123,12 @@ impl Config {
     fn frr_config(config: &Hash) -> Option<Plugin> {
         let mut frr = Frr::default();
         // set frr daemon path
-        if let Some(daemon_path) = config.get(&Yaml::String(String::from("daemon"))) {
-            frr.daemon_path = daemon_path.clone().into_string().unwrap();
+        if let Some(daemon_dir) = config.get(&Yaml::String(String::from("daemon-dir"))) {
+            frr.daemon_dir = daemon_dir.clone().into_string().unwrap();
         }
         // set frr cli path
-        if let Some(cli_path) = config.get(&Yaml::String(String::from("cli-path"))) {
-            frr.cli_path = cli_path.clone().into_string().unwrap();
+        if let Some(cli_dir) = config.get(&Yaml::String(String::from("cli-dir"))) {
+            frr.cli_dir = cli_dir.clone().into_string().unwrap();
         }
         Some(Plugin::Frr(frr))
     }
