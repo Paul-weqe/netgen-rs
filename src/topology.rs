@@ -1,14 +1,11 @@
 use crate::devices::{Link, Node, Router, Switch};
 use crate::plugins::Config;
 
-use netlink_packet_route::link::LinkFlag;
-use nix::net::if_::if_nametoindex;
 use rtnetlink::{new_connection, Handle};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read;
 use std::io::{Error as IoError, ErrorKind, Result as IoResult};
-use std::os::fd::AsRawFd;
 use tokio;
 use yaml_rust2::yaml::Yaml;
 use yaml_rust2::YamlLoader;
@@ -116,8 +113,8 @@ impl Topology {
                         }
                         if !self.nodes.contains_key(&link.dst_name) {
                             let err = format!(
-                                "src node name {} configured in link {:?} does not exist",
-                                link.src_name, link
+                                "dst node name {} configured in link {:?} does not exist",
+                                link.dst_name, link
                             );
                             return Err(IoError::new(ErrorKind::Other, err.as_str()));
                         }
@@ -223,148 +220,19 @@ impl Topology {
         false
     }
 
-    /// Given a list of router names and need to create a new namespace
-    /// for each one of them.
+    /// "Powers on" all the devices in the network.
     ///
-    /// We will be giving each router an id after creating it's
-    /// namespace and populating the router's path.
+    /// For switches, this is reating a bridged interface
+    ///     and making sure it's administrative state is "up"
     ///
-    /// use of BTreeSet is to ensure each of the strings is unique
-    pub async fn add_routers(&mut self, routers: BTreeSet<&str>) {
-        for name in routers {
-            let router = Router::new(name);
-            self.nodes.insert(name.to_string(), Node::Router(router));
+    /// For routers, this is creating a new namespace and making sure
+    ///     the relevant interfaces are brought up.
+    pub async fn power_on(&mut self) -> IoResult<()> {
+        for (_, node) in self.nodes.iter_mut() {
+            node.power_on(&self.handle).await?;
+            // ...
         }
-    }
-
-    /// Cretes the beidges for the respective switches.  
-    pub async fn add_switches(&mut self, switches: BTreeSet<&str>) {
-        for name in switches {
-            let switch = Switch::new(name);
-            self.nodes.insert(name.to_string(), Node::Switch(switch));
-        }
-    }
-
-    /// Tells you whether a node of a specific name exists
-    /// If it exists, it lets you know what the type of the node is
-    /// Creates a link that will be used between two nodes:
-    ///
-    /// src_name |===============================| dst_name
-    ///
-    /// Note that the src_iface and dst_iface should not have the same name
-    pub async fn add_link(
-        &self,
-        src_node: &str,
-        src_iface: &str,
-        dst_node: &str,
-        dst_iface: &str,
-    ) -> IoResult<Link> {
-        // create the link
-        let mut request = self
-            .handle
-            .link()
-            .add()
-            .veth(src_iface.into(), dst_iface.into());
-        request.message_mut().header.flags.push(LinkFlag::Up);
-
-        if let Err(err) = request.execute().await {
-            let e = format!(
-                "problem creating veth link [{src_node}:{src_iface} - {dst_node}:{dst_iface}]\n {:#?}",
-                err
-            );
-            return Err(IoError::new(ErrorKind::Other, e.as_str()));
-        }
-
-        if let Some(node_1) = self.nodes.get(src_node)
-            && let Some(node_2) = self.nodes.get(dst_node)
-        {
-            match node_1 {
-                // attaches the first link to its respective interface
-                // device
-                Node::Router(router) => {
-                    if let Ok(index) = if_nametoindex(src_iface) {
-                        if let Some(file_path) = &router.file_path {
-                            let file = File::open(file_path).unwrap();
-                            self.handle
-                                .link()
-                                .set(index)
-                                .setns_by_fd(file.as_raw_fd())
-                                .execute()
-                                .await
-                                .unwrap();
-                            let _ = router.up(src_iface.to_string()).await;
-                        }
-                    }
-                }
-                Node::Switch(switch) => {
-                    if let Ok(index) = if_nametoindex(src_iface)
-                        && let Some(ifindex) = switch.ifindex
-                    {
-                        self.handle.link().set(index).up().execute().await.unwrap();
-                        self.handle
-                            .link()
-                            .set(index)
-                            .controller(ifindex)
-                            .execute()
-                            .await
-                            .unwrap();
-                        // TODO: Handle the error in case of a problem while setting the MASTER
-                    }
-                }
-            }
-
-            // attaches the second link to its respective interface
-            // device.
-            // Also, during the bringing up of the veth interface above,
-            // only the src_iface changes the admin state to up. So we
-            // manually have to set dst_iface state as up
-            match node_2 {
-                Node::Router(router) => {
-                    if let Ok(index) = if_nametoindex(dst_iface) {
-                        if let Some(file_path) = &router.file_path {
-                            let file = File::open(file_path).unwrap();
-                            self.handle
-                                .link()
-                                .set(index)
-                                .setns_by_fd(file.as_raw_fd())
-                                .execute()
-                                .await
-                                .unwrap();
-                            let _ = router.up(dst_iface.to_string()).await;
-                        }
-                    }
-                }
-                Node::Switch(switch) => {
-                    if let Ok(index) = if_nametoindex(dst_iface)
-                        && let Some(ifindex) = switch.ifindex
-                    {
-                        // bring up the link endpoint
-                        self.handle.link().set(index).up().execute().await.unwrap();
-                        self.handle
-                            .link()
-                            .set(index)
-                            .controller(ifindex)
-                            .execute()
-                            .await
-                            .unwrap();
-                        // TODO: Handle the error in case of a problem while setting the MASTER
-                    }
-                }
-            }
-
-            Ok(Link {
-                src_name: src_node.to_string(),
-                src_iface: src_iface.to_string(),
-                dst_name: dst_node.to_string(),
-                dst_iface: dst_iface.to_string(),
-            })
-        } else {
-            let err = format!(
-                "One of the nodes [{}] or [{}] does not exist in the topology",
-                src_node, dst_node
-            );
-            Err(IoError::new(ErrorKind::Other, err.as_str()))
-        }
+        Ok(())
     }
 }
 

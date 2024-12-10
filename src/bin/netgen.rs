@@ -5,6 +5,7 @@ use std::fs::File;
 
 #[tokio::main]
 async fn main() {
+    let mut topology: Topology = Topology::new();
     if let Ok(mut config_file) = File::open("./assets/config.yml")
         && let Ok(mut topo_file) = File::open("./assets/sample-top.yml")
     {
@@ -15,13 +16,7 @@ async fn main() {
         };
 
         // load the topology configuration
-        match Topology::from_yaml_file(&mut topo_file, config) {
-            Ok(topo) => {
-                println!("{:?}", topo);
-            }
-            Err(err) => {
-                println!("{:#?}", err);
-            }
-        }
+        topology = Topology::from_yaml_file(&mut topo_file, config).unwrap();
     }
+    let _ = topology.power_on().await;
 }

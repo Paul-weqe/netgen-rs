@@ -1,4 +1,5 @@
 use crate::plugins::{Config, Holo, Plugin};
+
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use netlink_packet_route::link::LinkFlag;
 use nix::net::if_::if_nametoindex;
@@ -135,7 +136,8 @@ impl Router {
         Ok(router)
     }
 
-    /// Creates a namespace and turns on the loopback interface.
+    /// Creates a namespace representing the router
+    /// and turns on the loopback interface.
     pub async fn power_on(&mut self) -> IoResult<()> {
         if let Err(err) = NetworkNamespace::add(self.name.clone()).await {
             let e = format!("unable to create namespace\n {:#?}", err);
@@ -148,6 +150,8 @@ impl Router {
 
         // make sure the loopback interface of the router is up
         let _ = self.up(String::from("lo")).await;
+
+        // add the environment variables for the necessary binaries
         Ok(())
     }
 
@@ -286,6 +290,7 @@ impl Switch {
         Ok(switch)
     }
 
+    /// Initializes a network bridge representing the switch.
     pub async fn power_on(&mut self, handle: &Handle) -> IoResult<()> {
         let name = self.name.as_str();
         let mut request = handle.link().add().bridge(name.into());
@@ -318,19 +323,10 @@ pub(crate) enum Node {
 }
 
 impl Node {
-    /// Brings the device up.
-    ///
-    /// if it is a router, we specify the interface name that is
-    /// to be brought up. the handle will be created custom for
-    /// the router's namespace.
-    ///
-    /// If it is a switch, we specify the handle, but since the switch
-    /// is a bridge device and we already have the interface name, we
-    /// only use that for the switch.
-    pub async fn _up(&mut self, handle: &Handle, iface_name: String) -> IoResult<()> {
+    pub async fn power_on(&mut self, handle: &Handle) -> IoResult<()> {
         match self {
-            Self::Router(router) => router.up(iface_name).await,
-            Self::Switch(switch) => switch.up(handle).await,
+            Self::Router(router) => router.power_on().await,
+            Self::Switch(switch) => switch.power_on(handle).await,
         }
     }
 }
