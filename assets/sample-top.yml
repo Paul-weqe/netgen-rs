@@ -50,3 +50,8 @@ links:
     dst: rt1 
     dst-iface: eth1
 
+  - src: rt1 
+    src-iface: eth2 
+    dst: sw1 
+    dst-iface: eth-rt
+

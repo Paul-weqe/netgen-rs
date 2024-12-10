@@ -302,6 +302,7 @@ impl Switch {
         // TODO: error handling for when bringing the interface up does not work.
         let ifindex = if_nametoindex(name)?;
         self.ifindex = Some(ifindex);
+        handle.link().set(ifindex).up().execute().await.unwrap();
         Ok(())
     }
 

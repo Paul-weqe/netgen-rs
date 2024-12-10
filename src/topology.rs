@@ -1,11 +1,15 @@
 use crate::devices::{Link, Node, Router, Switch};
 use crate::plugins::Config;
 
+use netlink_packet_route::link::LinkFlag;
+use nix::net::if_::if_nametoindex;
+use rand::{distributions::Alphanumeric, Rng};
 use rtnetlink::{new_connection, Handle};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read;
 use std::io::{Error as IoError, ErrorKind, Result as IoResult};
+use std::os::fd::AsRawFd;
 use tokio;
 use yaml_rust2::yaml::Yaml;
 use yaml_rust2::YamlLoader;
@@ -230,7 +234,120 @@ impl Topology {
     pub async fn power_on(&mut self) -> IoResult<()> {
         for (_, node) in self.nodes.iter_mut() {
             node.power_on(&self.handle).await?;
-            // ...
+        }
+        Ok(())
+    }
+
+    pub async fn setup_links(&mut self) -> IoResult<()> {
+        for l in self.links.clone() {
+            self.create_link(&l).await?;
+        }
+        Ok(())
+    }
+
+    /// creates a link between two nodes.
+    pub async fn create_link(&mut self, link: &Link) -> IoResult<()> {
+        // generate random names for veth link
+        // we do this to avoid conflict in the
+        // parent device of interface names.
+        let mut link_name: String;
+        link_name = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(4)
+            .map(char::from)
+            .collect();
+
+        let node1_link = format!("eth-{link_name}");
+
+        link_name = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(4)
+            .map(char::from)
+            .collect();
+        let node2_link = format!("eth-{link_name}");
+        let mut request = self
+            .handle
+            .link()
+            .add()
+            .veth(node1_link.clone(), node2_link.clone());
+        request.message_mut().header.flags.push(LinkFlag::Up);
+        request.execute().await.unwrap();
+        if let Some(src_node) = self.nodes.get(&link.src_name)
+            && let Some(dst_node) = self.nodes.get(&link.dst_name)
+        {
+            // attaches the links to their respective nodes
+            self.attach_link(src_node, node1_link, link.src_iface.clone())
+                .await?;
+            self.attach_link(dst_node, node2_link, link.dst_iface.clone())
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn attach_link(
+        &self,
+        node: &Node,
+        current_link_name: String,
+        new_link_name: String,
+    ) -> IoResult<()> {
+        // TODO: handle the unwraps in here.
+        match node {
+            Node::Router(router) => {
+                if let Ok(index) = if_nametoindex(current_link_name.as_str())
+                    && let Some(file_path) = &router.file_path
+                    && let Ok(file) = File::open(file_path)
+                {
+                    // move router device to said namespace
+                    self.handle
+                        .link()
+                        .set(index)
+                        .setns_by_fd(file.as_raw_fd())
+                        .execute()
+                        .await
+                        .unwrap();
+
+                    // rename the interface to it's proper name
+                    router
+                        .run(move || async move {
+                            let (conn, handle, _) = new_connection().unwrap();
+                            tokio::spawn(conn);
+                            // bring the interface up and give it the proper name
+                            handle
+                                .link()
+                                .set(index)
+                                .up()
+                                .name(new_link_name)
+                                .execute()
+                                .await
+                                // TODO: add a handler for this unwrap()
+                                .unwrap();
+                        })
+                        .await
+                        .unwrap();
+                }
+            }
+            Node::Switch(switch) => {
+                if let Ok(index) = if_nametoindex(current_link_name.as_str())
+                    && let Some(ifindex) = switch.ifindex
+                {
+                    self.handle
+                        .link()
+                        .set(index)
+                        .name(new_link_name)
+                        .up()
+                        .execute()
+                        .await
+                        .unwrap();
+                    self.handle
+                        .link()
+                        .set(index)
+                        .controller(ifindex)
+                        .execute()
+                        .await
+                        .unwrap();
+                }
+            }
         }
         Ok(())
     }

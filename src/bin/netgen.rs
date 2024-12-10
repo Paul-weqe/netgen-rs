@@ -18,5 +18,7 @@ async fn main() {
         // load the topology configuration
         topology = Topology::from_yaml_file(&mut topo_file, config).unwrap();
     }
-    let _ = topology.power_on().await;
+
+    topology.power_on().await.unwrap();
+    topology.setup_links().await.unwrap();
 }

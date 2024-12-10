@@ -16,3 +16,4 @@ tokio = { version = "1.41.1", features = ["full"] }
 libc = "0.2.164"
 enum-as-inner = "0.6.1"
 ipnetwork = "0.20.0"
+rand = "0.8.5"
