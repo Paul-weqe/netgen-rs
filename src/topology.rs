@@ -232,9 +232,13 @@ impl Topology {
     /// For routers, this is creating a new namespace and making sure
     ///     the relevant interfaces are brought up.
     pub async fn power_on(&mut self) -> IoResult<()> {
+        // powers on all the nodes
         for (_, node) in self.nodes.iter_mut() {
             node.power_on(&self.handle).await?;
         }
+
+        // sets up all the links
+        self.setup_links().await?;
         Ok(())
     }
 

@@ -19,6 +19,6 @@ async fn main() {
         topology = Topology::from_yaml_file(&mut topo_file, config).unwrap();
     }
 
+    // "powers on" all the devices and sets up all the required links
     topology.power_on().await.unwrap();
-    topology.setup_links().await.unwrap();
 }
