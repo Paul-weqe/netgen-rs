@@ -21,6 +21,20 @@ pub struct Interface {
 }
 
 impl Interface {
+    async fn add_addresses(&self, handle: &Handle) -> IoResult<()> {
+        if let Ok(ifindex) = if_nametoindex(self.name.as_str()) {
+            for addr in &self.addresses {
+                let request = handle.address().add(ifindex, addr.ip(), addr.prefix());
+                let _ = request.execute().await;
+                // TODO: catch error in cast of problems adding an address
+                // to the interface
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Interface {
     fn from_yaml_config(name: &str, yaml_config: &Hash) -> IoResult<Self> {
         let mut interface = Interface {
             name: name.to_string(),
@@ -264,15 +278,7 @@ impl Router {
                 if let Ok((connection, handle, _)) = new_connection() {
                     tokio::spawn(connection);
                     for iface in interfaces {
-                        if let Ok(ifindex) = if_nametoindex(iface.name.as_str()) {
-                            for addr in &iface.addresses {
-                                let request =
-                                    handle.address().add(ifindex, addr.ip(), addr.prefix());
-                                let _ = request.execute().await;
-                                // TODO: catch error in cast of problems adding an address
-                                // to the interface
-                            }
-                        }
+                        let _ = iface.add_addresses(&handle).await;
                     }
                 }
                 // TODO: add error catcher
