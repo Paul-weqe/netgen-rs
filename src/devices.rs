@@ -157,7 +157,7 @@ impl Router {
 
     /// Deletes the namespace created by the Router (if it exists)
     pub async fn power_off(&mut self) {
-        //
+        // TODO: add power_off functionality
     }
 
     /// Runs the commands inside the
@@ -232,6 +232,50 @@ impl Router {
                 }
                 // TODO: add error catcher in case
                 // of problems when bringing the interface up
+                Ok(())
+            })
+            .await;
+        result?
+    }
+
+    /// adds the addresses of the said router as
+    /// per the topology yaml file.
+    ///
+    /// Example:
+    /// ```yaml
+    ///
+    /// rt2:
+    ///   plugin: holo
+    ///   interfaces:
+    ///     lo:
+    ///       ipv4:
+    ///       - 2.2.2.2/32
+    ///     eth-sw1:
+    ///       ipv4:
+    ///       - 10.0.1.2/24
+    /// ```
+    /// Above yaml config in topo file will add the address
+    /// 10.0.1.2/24 to the eth-sw1 interface and 2.2.2.2/32
+    /// to the lo address
+    pub async fn add_iface_addresses(&self) -> IoResult<()> {
+        let interfaces = self.interfaces.clone();
+        let result = self
+            .run(move || async move {
+                if let Ok((connection, handle, _)) = new_connection() {
+                    tokio::spawn(connection);
+                    for iface in interfaces {
+                        if let Ok(ifindex) = if_nametoindex(iface.name.as_str()) {
+                            for addr in &iface.addresses {
+                                let request =
+                                    handle.address().add(ifindex, addr.ip(), addr.prefix());
+                                let _ = request.execute().await;
+                                // TODO: catch error in cast of problems adding an address
+                                // to the interface
+                            }
+                        }
+                    }
+                }
+                // TODO: add error catcher
                 Ok(())
             })
             .await;

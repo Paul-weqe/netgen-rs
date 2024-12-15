@@ -243,8 +243,17 @@ impl Topology {
     }
 
     pub async fn setup_links(&mut self) -> IoResult<()> {
+        // create links
         for l in self.links.clone() {
             self.create_link(&l).await?;
+        }
+
+        // add addresss for links in
+        // the router nodes
+        for (_, node) in self.nodes.iter_mut() {
+            if let Node::Router(router) = node {
+                let _ = &router.add_iface_addresses().await;
+            }
         }
         Ok(())
     }
