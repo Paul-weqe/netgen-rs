@@ -295,6 +295,7 @@ impl Switch {
         let name = self.name.as_str();
         let mut request = handle.link().add().bridge(name.into());
         request.message_mut().header.flags.push(LinkFlag::Up);
+        request.message_mut().header.flags.push(LinkFlag::Multicast);
         if let Err(err) = request.execute().await {
             let e = format!("problem creating bridge {}\n {:#?}", &self.name, err);
             return Err(IoError::new(ErrorKind::Other, e.as_str()));
