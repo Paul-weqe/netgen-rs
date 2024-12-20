@@ -1,3 +1,5 @@
+use crate::{error::Error, Result};
+
 use std::fs::File;
 use std::io::{Read, Result as IoResult};
 use yaml_rust2::yaml::Hash;
@@ -22,26 +24,25 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_yaml_file(file: &mut File) -> IoResult<Self> {
+    pub fn from_yaml_file(file: &mut File) -> Result<Self> {
         let mut contents = String::new();
         let _ = file.read_to_string(&mut contents);
         Self::from_yaml_str(contents.as_str())
     }
 
-    pub fn from_yaml_str(yaml_str: &str) -> IoResult<Self> {
+    pub fn from_yaml_str(yaml_str: &str) -> Result<Self> {
         let data = YamlLoader::load_from_str(yaml_str).unwrap();
         Self::from_yaml(&data)
     }
 
-    pub fn from_yaml(yaml_data: &Vec<Yaml>) -> IoResult<Self> {
+    pub fn from_yaml(yaml_data: &Vec<Yaml>) -> Result<Self> {
         let mut plugins_configs: Vec<Plugin> = vec![];
 
         for single_config in yaml_data {
             if let Yaml::Hash(configs) = single_config {
                 // look through the plugins
-                if let Some(plugin_params) = configs.get(&Yaml::String("plugins".to_string()))
-                    && let Ok(plugins) = Self::yaml_parse_plugins(plugin_params)
-                {
+                if let Some(plugin_params) = configs.get(&Yaml::String("plugins".to_string())) {
+                    let plugins = Self::yaml_parse_plugins(plugin_params)?;
                     plugins_configs = plugins;
                 }
             }
@@ -56,10 +57,12 @@ impl Config {
     /// Parses each individual plugin to a
     /// {plugin-name}_config() function
     /// e.g holo_plugin(), frr_plugin() etc...
-    fn yaml_parse_plugins(plugin_configs: &Yaml) -> IoResult<Vec<Plugin>> {
+    fn yaml_parse_plugins(plugin_configs: &Yaml) -> Result<Vec<Plugin>> {
         let mut plugins: Vec<Plugin> = vec![];
+
         if let Yaml::Hash(configured_plugins) = plugin_configs {
             for (plugin_name, plugin_config) in configured_plugins {
+                // fetch name if plugin_name is string
                 if let Yaml::String(name) = plugin_name
                     && let &Yaml::Hash(config) = &plugin_config
                 {
@@ -76,14 +79,10 @@ impl Config {
                                 plugins.push(frr_plugin_config);
                             }
                         }
-                        _ => {
-                            // TODO: throw an error for an invalid
-                            // plugin name
-                        }
+                        _ => return Err(Error::InvalidPluginName(name.to_string())),
                     }
                 } else {
-                    // TODO: check for if the configs
-                    // for a plugin are not a Hash
+                    return Err(Error::IncorrectYamlType(format!("{:?}", plugin_name)));
                 }
             }
         }
