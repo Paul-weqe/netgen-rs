@@ -32,9 +32,6 @@ impl Interface {
         }
         Ok(())
     }
-}
-
-impl Interface {
     fn from_yaml_config(name: &str, yaml_config: &Hash) -> IoResult<Self> {
         let mut interface = Interface {
             name: name.to_string(),
