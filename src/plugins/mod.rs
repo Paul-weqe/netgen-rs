@@ -1,7 +1,7 @@
 use crate::{error::Error, Result};
 
 use std::fs::File;
-use std::io::{Read, Result as IoResult};
+use std::io::Read;
 use yaml_rust2::yaml::Hash;
 use yaml_rust2::yaml::Yaml;
 use yaml_rust2::YamlLoader;

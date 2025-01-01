@@ -1,10 +1,12 @@
 use crate::ALLOWED_PLUGINS;
 
-use yaml_rust2::scanner::{Marker, ScanError};
-use yaml_rust2::yaml::Yaml;
+use std::io::Error as IoError;
+use yaml_rust2::scanner::ScanError;
 
 #[derive(Debug)]
 pub enum Error {
+    GeneralError(String),
+    IoError(IoError),
     ScanError(ScanError),
 
     // Vec<String> -> allowed names, String -> configured name
@@ -17,6 +19,8 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::GeneralError(error) => write!(f, "{}", error.as_str()),
+            Self::IoError(error) => std::fmt::Display::fmt(error, f),
             Self::ScanError(error) => std::fmt::Display::fmt(error, f),
             Self::InvalidPluginName(plugin_name) => {
                 write!(
@@ -26,7 +30,7 @@ impl std::fmt::Display for Error {
                 )
             }
             Self::IncorrectYamlType(name) => {
-                write!(f, "Incorrect yaml type for field '{}'.", name)
+                write!(f, "Incorrect yaml type for field \"{}\".", name)
             }
         }
     }

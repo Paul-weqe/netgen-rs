@@ -1,4 +1,5 @@
 use crate::plugins::{Config, Holo, Plugin};
+use crate::{error::Error, Result};
 
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use netlink_packet_route::link::LinkFlag;
@@ -8,7 +9,7 @@ use nix::unistd::gettid;
 use rtnetlink::{new_connection, Handle, NetworkNamespace, NETNS_PATH};
 use std::fs::File;
 use std::future::Future;
-use std::io::{Error as IoError, ErrorKind, Result as IoResult};
+use std::io::{Error as IoError, ErrorKind};
 use std::os::fd::AsFd;
 use yaml_rust2::yaml::Hash;
 use yaml_rust2::Yaml;
@@ -21,49 +22,56 @@ pub struct Interface {
 }
 
 impl Interface {
-    async fn add_addresses(&self, handle: &Handle) -> IoResult<()> {
-        if let Ok(ifindex) = if_nametoindex(self.name.as_str()) {
-            for addr in &self.addresses {
-                let request = handle.address().add(ifindex, addr.ip(), addr.prefix());
-                let _ = request.execute().await;
-                // TODO: catch error in cast of problems adding an address
-                // to the interface
-            }
+    async fn add_addresses(&self, handle: &Handle) -> Result<()> {
+        let ifindex = if_nametoindex(self.name.as_str()).map_err(|_| {
+            let err_msg = format!("Interface {:?} not found", self.name);
+            Error::GeneralError(err_msg)
+        })?;
+
+        for addr in &self.addresses {
+            let request = handle.address().add(ifindex, addr.ip(), addr.prefix());
+            request.execute().await.map_err(|_| {
+                let err_msg = format!("Unable to add address {:?}", addr);
+                Error::GeneralError(err_msg)
+            })?;
         }
         Ok(())
     }
-    fn from_yaml_config(name: &str, yaml_config: &Hash) -> IoResult<Self> {
+
+    fn from_yaml_config(name: &str, yaml_config: &Hash) -> Result<Self> {
         let mut interface = Interface {
             name: name.to_string(),
             addresses: vec![],
         };
 
-        // --- get the interface's Ipv4 addresses ---
-        if let Some(Yaml::Array(ipv4_addresses)) =
-            yaml_config.get(&Yaml::String(String::from("ipv4")))
-        {
-            let mut addr_iter = ipv4_addresses.iter();
-            while let Some(Yaml::String(addr_str)) = addr_iter.next() {
-                if let Ok(ip_net) = addr_str.parse::<Ipv4Network>() {
-                    interface.addresses.push(IpNetwork::V4(ip_net));
+        // --- Get the interface's Ipv4 addresses ---
+        if let Some(ipv4_addresses) = yaml_config.get(&Yaml::String(String::from("ipv4"))) {
+            if let Yaml::Array(ipv4_addresses) = ipv4_addresses {
+                let mut addr_iter = ipv4_addresses.iter();
+                while let Some(Yaml::String(addr_str)) = addr_iter.next() {
+                    if let Ok(ip_net) = addr_str.parse::<Ipv4Network>() {
+                        interface.addresses.push(IpNetwork::V4(ip_net));
+                    }
                 }
+            } else {
+                // When ipv4 is not an array
+                return Err(Error::IncorrectYamlType(String::from("ipv4")));
             }
-        } else {
-            // TODO: handle cases for when the user has not configured ipv4 as an array
         }
 
-        // --- get the interface's Ipv6 addresses ---
-        if let Some(Yaml::Array(ipv6_addresses)) =
-            yaml_config.get(&Yaml::String(String::from("ipv6")))
-        {
-            let mut addr_iter = ipv6_addresses.iter();
-            while let Some(Yaml::String(addr_str)) = addr_iter.next() {
-                if let Ok(ip_net) = addr_str.parse::<Ipv6Network>() {
-                    interface.addresses.push(IpNetwork::V6(ip_net));
+        // --- Get the interface's Ipv6 addresses ---
+        if let Some(ipv6_addresses) = yaml_config.get(&Yaml::String(String::from("ipv6"))) {
+            if let Yaml::Array(ipv6_addresses) = ipv6_addresses {
+                let mut addr_iter = ipv6_addresses.iter();
+                while let Some(Yaml::String(addr_str)) = addr_iter.next() {
+                    if let Ok(ip_net) = addr_str.parse::<Ipv6Network>() {
+                        interface.addresses.push(IpNetwork::V6(ip_net));
+                    }
                 }
+            } else {
+                // When ipv4 is not an array
+                return Err(Error::IncorrectYamlType(String::from("ipv6")));
             }
-        } else {
-            // TODO: handle cases for when the user has not configured ipv4 as an array
         }
         Ok(interface)
     }
@@ -98,7 +106,7 @@ impl Router {
         name: &str,
         router_config: &Hash,
         config: &Option<Config>,
-    ) -> IoResult<Self> {
+    ) -> Result<Self> {
         let mut router = Self::new(name);
 
         // == plugin configs ==
@@ -117,14 +125,12 @@ impl Router {
                         router.plugin = Some(Plugin::Holo(Holo::default()));
                     }
                 }
-                _ => {
-                    // TODO: handler when the plugin mentioned does not exist
-                }
+                _ => return Err(Error::InvalidPluginName(plugin_name.to_string())),
             }
         } else {
-
-            // TODO: return an error in the case the plugin config has not
-            // been configured as a yaml string
+            return Err(Error::GeneralError(String::from(
+                "field 'plugin' required for device",
+            )));
         }
 
         // == interface configs ==
@@ -139,8 +145,9 @@ impl Router {
                         router.interfaces.push(interface);
                     }
                 } else {
-                    // TODO: handle when iface name is not a string
-                    // or iface config is not a Hash
+                    return Err(Error::GeneralError(String::from(
+                        "Interface content for '{:?}' not a dictionary",
+                    )));
                 }
             }
         }
@@ -149,10 +156,11 @@ impl Router {
 
     /// Creates a namespace representing the router
     /// and turns on the loopback interface.
-    pub async fn power_on(&mut self) -> IoResult<()> {
+    pub async fn power_on(&mut self) -> Result<()> {
         if let Err(err) = NetworkNamespace::add(self.name.clone()).await {
-            let e = format!("unable to create namespace\n {:#?}", err);
-            return Err(IoError::new(ErrorKind::Other, e.as_str()));
+            let err_msg = format!("unable to create namespace\n {:?}", err);
+            let io_err = IoError::new(ErrorKind::Other, err_msg.as_str());
+            return Err(Error::IoError(io_err));
         }
         let mut ns_path = String::new();
         ns_path.push_str(NETNS_PATH);
@@ -160,7 +168,7 @@ impl Router {
         self.file_path = Some(ns_path);
 
         // make sure the loopback interface of the router is up
-        let _ = self.up(String::from("lo")).await;
+        self.up(String::from("lo")).await?;
 
         // add the environment variables for the necessary binaries
         Ok(())
@@ -194,7 +202,7 @@ impl Router {
     ///     }).await;
     /// }
     /// ```
-    pub async fn run<Fut, T, R>(&self, f: Fut) -> IoResult<R>
+    pub async fn run<Fut, T, R>(&self, f: Fut) -> Result<R>
     where
         Fut: FnOnce() -> T + Send + 'static,
         T: Future<Output = R> + Send,
@@ -232,17 +240,31 @@ impl Router {
     ///     router.up("lo").await;
     /// }
     /// ```
-    pub async fn up(&self, iface_name: String) -> IoResult<()> {
+    pub async fn up(&self, iface_name: String) -> Result<()> {
+        let router_name = self.name.clone();
         let result = self
             .run(move || async move {
-                if let Ok(ifindex) = if_nametoindex(iface_name.as_str())
-                    && let Ok((connection, handle, _)) = new_connection()
-                {
-                    tokio::spawn(connection);
-                    let _ = handle.link().set(ifindex).up().execute().await;
-                }
-                // TODO: add error catcher in case
-                // of problems when bringing the interface up
+                let (connection, handle, _) = new_connection().unwrap();
+                let ifindex = if_nametoindex(iface_name.as_str()).map_err(|_| {
+                    let err_msg = format!("Router interface '{}:{}' not found", router_name, iface_name);
+                    Error::GeneralError(err_msg)
+                })?;
+
+                tokio::spawn(connection);
+
+                handle
+                    .link()
+                    .set(ifindex)
+                    .up()
+                    .execute()
+                    .await
+                    .map_err(|err| {
+                        let err_msg = format!(
+                            "Unable to change Router '{}' interface '{}' state to up. Netlink Error: {:?}",
+                            router_name, iface_name, err
+                        );
+                        Error::GeneralError(err_msg)
+                    })?;
                 Ok(())
             })
             .await;
@@ -268,17 +290,15 @@ impl Router {
     /// Above yaml config in topo file will add the address
     /// 10.0.1.2/24 to the eth-sw1 interface and 2.2.2.2/32
     /// to the lo address
-    pub async fn add_iface_addresses(&self) -> IoResult<()> {
+    pub async fn add_iface_addresses(&self) -> Result<()> {
         let interfaces = self.interfaces.clone();
         let result = self
             .run(move || async move {
-                if let Ok((connection, handle, _)) = new_connection() {
-                    tokio::spawn(connection);
-                    for iface in interfaces {
-                        let _ = iface.add_addresses(&handle).await;
-                    }
+                let (connection, handle, _) = new_connection().unwrap();
+                tokio::spawn(connection);
+                for iface in interfaces {
+                    iface.add_addresses(&handle).await?;
                 }
-                // TODO: add error catcher
                 Ok(())
             })
             .await;
@@ -315,7 +335,7 @@ impl Switch {
     ///         - 2001:db8::/96
     /// ```
     /// converted into a yaml_rust2::yaml::Hash;
-    pub fn from_yaml_config(switch_name: &str, switch_config: &Hash) -> IoResult<Self> {
+    pub fn from_yaml_config(switch_name: &str, switch_config: &Hash) -> Result<Self> {
         let mut switch = Self::new(switch_name);
 
         if let Some(Yaml::Hash(interfaces_config)) =
@@ -325,39 +345,57 @@ impl Switch {
                 if let Yaml::String(iface_name) = iface_name
                     && let Yaml::Hash(iface_config) = iface_config
                 {
-                    if let Ok(interface) = Interface::from_yaml_config(iface_name, iface_config) {
-                        switch.interfaces.push(interface);
-                    }
+                    let interface = Interface::from_yaml_config(iface_name, iface_config)?;
+                    switch.interfaces.push(interface);
                 } else {
-                    // TODO: handle when iface name is not a string
-                    // or iface config is not a Hash
+                    return Err(Error::IncorrectYamlType(String::from(
+                        "interfaces['value']",
+                    )));
                 }
             }
+        } else {
+            return Err(Error::IncorrectYamlType(String::from("interfaces")));
         }
         Ok(switch)
     }
 
     /// Initializes a network bridge representing the switch.
-    pub async fn power_on(&mut self, handle: &Handle) -> IoResult<()> {
+    pub async fn power_on(&mut self, handle: &Handle) -> Result<()> {
         let name = self.name.as_str();
         let mut request = handle.link().add().bridge(name.into());
         request.message_mut().header.flags.push(LinkFlag::Up);
         request.message_mut().header.flags.push(LinkFlag::Multicast);
         if let Err(err) = request.execute().await {
             let e = format!("problem creating bridge {}\n {:#?}", &self.name, err);
-            return Err(IoError::new(ErrorKind::Other, e.as_str()));
+            let io_err = IoError::new(ErrorKind::Other, e.as_str());
+            return Err(Error::IoError(io_err));
         }
-        // TODO: error handling for when bringing the interface up does not work.
-        let ifindex = if_nametoindex(name)?;
+
+        let ifindex = if_nametoindex(name).map_err(|_| {
+            let err_msg = format!("interface {} not found", name);
+            Error::GeneralError(err_msg)
+        })?;
+
         self.ifindex = Some(ifindex);
-        handle.link().set(ifindex).up().execute().await.unwrap();
         Ok(())
     }
 
     /// changes the admin state of the interface to up
-    pub async fn up(&mut self, handle: &Handle) -> IoResult<()> {
+    pub async fn up(&mut self, handle: &Handle) -> Result<()> {
         if let Some(ifindex) = self.ifindex {
-            let _ = handle.link().set(ifindex).up().execute().await;
+            handle
+                .link()
+                .set(ifindex)
+                .up()
+                .execute()
+                .await
+                .map_err(|err| {
+                    let err_msg = format!(
+                        "Unable to change '{}' admin state to up.\n Netlink Error: {:?}",
+                        self.name, err
+                    );
+                    Error::GeneralError(err_msg)
+                })?;
         }
         Ok(())
     }
@@ -372,7 +410,7 @@ pub(crate) enum Node {
 }
 
 impl Node {
-    pub async fn power_on(&mut self, handle: &Handle) -> IoResult<()> {
+    pub async fn power_on(&mut self, handle: &Handle) -> Result<()> {
         match self {
             Self::Router(router) => router.power_on().await,
             Self::Switch(switch) => switch.power_on(handle).await,
