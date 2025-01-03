@@ -1,4 +1,4 @@
-use crate::plugins::{Config, Holo, Plugin};
+use crate::plugins::{Config, Plugin};
 use crate::{error::Error, Result};
 
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
@@ -85,12 +85,12 @@ pub struct Router {
     pub plugin: Option<Plugin>,
     pub interfaces: Vec<Interface>,
 
-    // this will be run when the startup is run
+    // This will be run when the startup is run
     pub startup_config: Option<String>,
 }
 
 impl Router {
-    /// creates a Router object that will represent the
+    /// Creates a Router object that will represent the
     /// router
     pub fn new(name: &str) -> Self {
         Self {
@@ -102,27 +102,19 @@ impl Router {
         }
     }
 
-    pub fn from_yaml_config(
-        name: &str,
-        router_config: &Hash,
-        config: &Option<Config>,
-    ) -> Result<Self> {
+    pub fn from_yaml_config(name: &str, router_config: &Hash, config: &Config) -> Result<Self> {
         let mut router = Self::new(name);
 
-        // == plugin configs ==
+        // == Plugin configs ==
         if let Some(plugin_config) = router_config.get(&Yaml::String(String::from("plugin")))
             && let Yaml::String(plugin_name) = plugin_config
         {
             match plugin_name.as_str() {
                 "holo" => {
-                    if let Some(config) = config {
-                        for plugin in &config.plugins {
-                            if let Plugin::Holo(_) = plugin {
-                                router.plugin = Some(plugin.clone());
-                            }
+                    for plugin in &config.plugins {
+                        if let Plugin::Holo(_) = plugin {
+                            router.plugin = Some(plugin.clone());
                         }
-                    } else {
-                        router.plugin = Some(Plugin::Holo(Holo::default()));
                     }
                 }
                 _ => return Err(Error::InvalidPluginName(plugin_name.to_string())),
@@ -133,7 +125,7 @@ impl Router {
             )));
         }
 
-        // == interface configs ==
+        // == Interface configs ==
         if let Some(Yaml::Hash(interfaces_config)) =
             router_config.get(&Yaml::String(String::from("interfaces")))
         {
@@ -146,9 +138,20 @@ impl Router {
                     }
                 } else {
                     return Err(Error::GeneralError(String::from(
-                        "Interface content for '{:?}' not a dictionary",
+                        "Interface content for 'interfaces' not a dictionary",
                     )));
                 }
+            }
+        }
+
+        // Get the startup config
+        if let Some(startup_config) =
+            router_config.get(&Yaml::String(String::from("startup-config")))
+        {
+            if let Yaml::String(startup_config) = startup_config {
+                router.startup_config = Some(startup_config.to_string());
+            } else {
+                return Err(Error::IncorrectYamlType(String::from("startup-config")));
             }
         }
         Ok(router)
@@ -167,10 +170,10 @@ impl Router {
         ns_path.push_str(self.name.as_str());
         self.file_path = Some(ns_path);
 
-        // make sure the loopback interface of the router is up
+        // Make sure the loopback interface of the router is up
         self.up(String::from("lo")).await?;
 
-        // add the environment variables for the necessary binaries
+        // Add the environment variables for the necessary binaries
         Ok(())
     }
 
@@ -179,8 +182,8 @@ impl Router {
         // TODO: add power_off functionality
     }
 
-    /// Runs the commands inside the
-    /// router namespace.
+    /// Executes instructions inside the
+    /// router's namespace.
     ///
     /// ```no_run
     /// use topology::Router;
@@ -189,7 +192,7 @@ impl Router {
     /// #[tokio::main]
     /// async fn main() {
     ///     let router = Router::new("r1").await.unwrap();
-    ///     router.run(move || async move {
+    ///     router.in_ns(move || async move {
     ///         let output = Command::new("ip")
     ///             .args(vec!["link"]).output();
     ///         
@@ -202,7 +205,7 @@ impl Router {
     ///     }).await;
     /// }
     /// ```
-    pub async fn run<Fut, T, R>(&self, f: Fut) -> Result<R>
+    pub async fn in_ns<Fut, T, R>(&self, f: Fut) -> Result<R>
     where
         Fut: FnOnce() -> T + Send + 'static,
         T: Future<Output = R> + Send,
@@ -243,7 +246,7 @@ impl Router {
     pub async fn up(&self, iface_name: String) -> Result<()> {
         let router_name = self.name.clone();
         let result = self
-            .run(move || async move {
+            .in_ns(move || async move {
                 let (connection, handle, _) = new_connection().unwrap();
                 let ifindex = if_nametoindex(iface_name.as_str()).map_err(|_| {
                     let err_msg = format!("Router interface '{}:{}' not found", router_name, iface_name);
@@ -293,7 +296,7 @@ impl Router {
     pub async fn add_iface_addresses(&self) -> Result<()> {
         let interfaces = self.interfaces.clone();
         let result = self
-            .run(move || async move {
+            .in_ns(move || async move {
                 let (connection, handle, _) = new_connection().unwrap();
                 tokio::spawn(connection);
                 for iface in interfaces {
@@ -415,6 +418,35 @@ impl Node {
             Self::Router(router) => router.power_on().await,
             Self::Switch(switch) => switch.power_on(handle).await,
         }
+    }
+
+    // gets the router daemon runing
+    pub async fn run(&self) -> Result<()> {
+        match self {
+            Self::Router(router) => {
+                if let Some(plugin) = &router.plugin {
+                    let plugin = plugin.clone();
+                    let _ = router.in_ns(move || async move { plugin.run() }).await?;
+                }
+                // TODO: handle when running the routing configs don't work.
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    pub async fn startup(&self) -> Result<()> {
+        if let Self::Router(router) = self {
+            if let Some(plugin) = &router.plugin
+                && let Some(startup_config) = router.startup_config.clone()
+            {
+                let plugin = plugin.clone();
+                let _ = router
+                    .in_ns(move || async move { plugin.startup(startup_config) })
+                    .await?;
+            }
+        }
+        Ok(())
     }
 }
 

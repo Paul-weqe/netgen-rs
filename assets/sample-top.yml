@@ -1,11 +1,11 @@
 routers:
   rt1:
     plugin: holo
+    startup-config: ./assets/rt1.conf
     interfaces:
       lo:
         ipv4: 
         - 1.1.1.1/32
-
       eth-sw1:
         ipv4:
         - 10.0.1.1/24
@@ -13,6 +13,7 @@ routers:
 
   rt2:
     plugin: holo
+    startup-config: ./assets/rt2.conf
     interfaces:
       lo:
         ipv4: 
@@ -23,6 +24,7 @@ routers:
 
   rt3:
     plugin: holo 
+    startup-config: ./assets/rt3.conf
     interfaces:
       lo:
         ipv4:

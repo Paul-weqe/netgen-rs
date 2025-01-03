@@ -12,6 +12,7 @@ use std::fs::File;
 use std::io::Read;
 use std::io::{Error as IoError, ErrorKind};
 use std::os::fd::AsRawFd;
+use std::time;
 use tokio;
 use yaml_rust2::yaml::Yaml;
 use yaml_rust2::YamlLoader;
@@ -36,13 +37,13 @@ impl Topology {
         }
     }
 
-    pub fn from_yaml_file(file: &mut File, config: Option<Config>) -> Result<Self> {
+    pub fn from_yaml_file(file: &mut File, config: Config) -> Result<Self> {
         let mut contents = String::new();
         let _ = file.read_to_string(&mut contents);
         Self::from_yaml_str(contents.as_str(), config)
     }
 
-    pub fn from_yaml_str(yaml_str: &str, config: Option<Config>) -> Result<Self> {
+    pub fn from_yaml_str(yaml_str: &str, config: Config) -> Result<Self> {
         let (connection, handle, _) = new_connection().unwrap();
         tokio::spawn(connection);
         let mut topology = Self {
@@ -61,11 +62,7 @@ impl Topology {
         Ok(topology)
     }
 
-    pub fn parse_topology_config(
-        &mut self,
-        yaml_data: &Yaml,
-        config: &Option<Config>,
-    ) -> Result<()> {
+    pub fn parse_topology_config(&mut self, yaml_data: &Yaml, config: &Config) -> Result<()> {
         if let Yaml::Hash(topo_config_group) = yaml_data {
             // fetch the routers
             if let Some(routers_configs) =
@@ -151,7 +148,7 @@ impl Topology {
     pub fn parse_router_configs(
         &self,
         routers_config: &Yaml,
-        config: &Option<Config>,
+        config: &Config,
     ) -> Result<Vec<Router>> {
         let mut routers: Vec<Router> = vec![];
         if let Yaml::Hash(configs) = routers_config {
@@ -250,6 +247,22 @@ impl Topology {
         Ok(())
     }
 
+    pub async fn run(&self) -> Result<()> {
+        for node in self.nodes.values() {
+            node.run().await?;
+        }
+
+        // Wait for the daemons to come up.
+        tokio::time::sleep(time::Duration::from_secs(2)).await;
+
+        // Run the startup config for the nodes
+        for node in self.nodes.values() {
+            node.startup().await?;
+        }
+
+        Ok(())
+    }
+
     pub async fn setup_links(&mut self) -> Result<()> {
         // create links
         for l in self.links.clone() {
@@ -330,7 +343,7 @@ impl Topology {
 
                     // rename the interface to it's proper name
                     router
-                        .run(move || async move {
+                        .in_ns(move || async move {
                             let (conn, handle, _) = new_connection().unwrap();
                             tokio::spawn(conn);
                             // bring the interface up and give it the proper name

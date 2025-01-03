@@ -1,7 +1,9 @@
 use crate::{error::Error, Result};
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
+
 use yaml_rust2::yaml::Hash;
 use yaml_rust2::yaml::Yaml;
 use yaml_rust2::YamlLoader;
@@ -18,16 +20,47 @@ pub enum Plugin {
     Frr(Frr),
 }
 
+impl Plugin {
+    pub fn run(&self) -> Result<()> {
+        match self {
+            Self::Holo(holo) => holo.run(),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn startup(&self, startup_config: String) -> Result<()> {
+        match self {
+            Self::Holo(holo) => holo.startup(startup_config),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn default_hash() -> HashMap<&'static str, Self> {
+        HashMap::from([
+            ("frr", Self::Frr(Frr::default())),
+            ("holo", Self::Holo(Holo::default())),
+        ])
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub(crate) plugins: Vec<Plugin>,
 }
 
 impl Config {
-    pub fn from_yaml_file(file: &mut File) -> Result<Self> {
-        let mut contents = String::new();
-        let _ = file.read_to_string(&mut contents);
-        Self::from_yaml_str(contents.as_str())
+    pub fn from_yaml_file(file: Option<&mut File>) -> Result<Self> {
+        match file {
+            Some(file) => {
+                let mut contents = String::new();
+                let _ = file.read_to_string(&mut contents);
+                Self::from_yaml_str(contents.as_str())
+            }
+            None => {
+                let plugins = Plugin::default_hash().values().cloned().collect();
+                Ok(Self { plugins })
+            }
+        }
     }
 
     pub fn from_yaml_str(yaml_str: &str) -> Result<Self> {
@@ -58,7 +91,7 @@ impl Config {
     /// {plugin-name}_config() function
     /// e.g holo_plugin(), frr_plugin() etc...
     fn yaml_parse_plugins(plugin_configs: &Yaml) -> Result<Vec<Plugin>> {
-        let mut plugins: Vec<Plugin> = vec![];
+        let mut plugins = Plugin::default_hash();
 
         if let Yaml::Hash(configured_plugins) = plugin_configs {
             for (plugin_name, plugin_config) in configured_plugins {
@@ -70,13 +103,15 @@ impl Config {
                         "holo" => {
                             let holo_config = Self::holo_config(config);
                             if let Some(holo_plugin_config) = holo_config {
-                                plugins.push(holo_plugin_config);
+                                plugins.remove("holo");
+                                plugins.insert("holo", holo_plugin_config);
                             }
                         }
                         "frr" => {
                             let frr_config = Self::frr_config(config);
                             if let Some(frr_plugin_config) = frr_config {
-                                plugins.push(frr_plugin_config);
+                                plugins.remove("frr");
+                                plugins.insert("frr", frr_plugin_config);
                             }
                         }
                         _ => return Err(Error::InvalidPluginName(name.to_string())),
@@ -86,7 +121,7 @@ impl Config {
                 }
             }
         }
-        Ok(plugins)
+        Ok(plugins.values().cloned().collect())
     }
 
     fn holo_config(config: &Hash) -> Option<Plugin> {
