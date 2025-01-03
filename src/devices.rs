@@ -1,16 +1,18 @@
 use crate::plugins::{Config, Plugin};
 use crate::{error::Error, Result};
 
+use futures_util::TryStreamExt;
+use std::fs::File;
+use std::future::Future;
+use std::io::{Error as IoError, ErrorKind};
+use std::os::fd::AsFd;
+
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use netlink_packet_route::link::LinkFlag;
 use nix::net::if_::if_nametoindex;
 use nix::sched::{setns, CloneFlags};
 use nix::unistd::gettid;
 use rtnetlink::{new_connection, Handle, NetworkNamespace, NETNS_PATH};
-use std::fs::File;
-use std::future::Future;
-use std::io::{Error as IoError, ErrorKind};
-use std::os::fd::AsFd;
 use yaml_rust2::yaml::Hash;
 use yaml_rust2::Yaml;
 
@@ -179,7 +181,11 @@ impl Router {
 
     /// Deletes the namespace created by the Router (if it exists)
     pub async fn power_off(&mut self) {
-        // TODO: add power_off functionality
+        if let Err(err) = NetworkNamespace::del(self.name.clone()).await {
+            // TODO: log this problem and end this process Gracefully.
+            // Once logging and tracing are setup.
+            println!("unable to delete namespace\n {:?}", err);
+        }
     }
 
     /// Executes instructions inside the
@@ -383,6 +389,36 @@ impl Switch {
         Ok(())
     }
 
+    /// Deletes the network bridge representing the switch
+    pub async fn power_off(&mut self, handle: &Handle) {
+        // Get interface ifindex
+        let mut links = handle.link().get().match_name(self.name.clone()).execute();
+
+        let msg = links.try_next().await;
+        match msg {
+            Ok(msg) => {
+                if let Some(msg) = msg {
+                    let ifindex = msg.header.index;
+
+                    // Delete interface
+                    let request = handle.link().del(ifindex);
+                    if let Err(err) = request.execute().await {
+                        // TODO: handle logging for this once logging & tracing are setup
+                        println!("problem deleting interface '{}'\n{:#?}", self.name, err);
+                    }
+                } else {
+                    println!("problem getting netlink header for '{}'", self.name);
+                }
+            }
+            Err(err) => {
+                println!(
+                    "problem fetching interface details for '{}'\n{:#?}",
+                    self.name, err
+                );
+            }
+        }
+    }
+
     /// changes the admin state of the interface to up
     pub async fn up(&mut self, handle: &Handle) -> Result<()> {
         if let Some(ifindex) = self.ifindex {
@@ -420,6 +456,13 @@ impl Node {
         }
     }
 
+    pub async fn power_off(&mut self, handle: &Handle) {
+        match self {
+            Self::Router(router) => router.power_off().await,
+            Self::Switch(switch) => switch.power_off(handle).await,
+        }
+    }
+
     // gets the router daemon runing
     pub async fn run(&self) -> Result<()> {
         match self {
@@ -435,14 +478,14 @@ impl Node {
         }
     }
 
-    pub async fn startup(&self) -> Result<()> {
+    pub async fn run_startup_config(&self) -> Result<()> {
         if let Self::Router(router) = self {
             if let Some(plugin) = &router.plugin
                 && let Some(startup_config) = router.startup_config.clone()
             {
                 let plugin = plugin.clone();
                 let _ = router
-                    .in_ns(move || async move { plugin.startup(startup_config) })
+                    .in_ns(move || async move { plugin.run_startup_config(startup_config) })
                     .await?;
             }
         }

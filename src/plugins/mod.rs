@@ -28,9 +28,9 @@ impl Plugin {
         }
     }
 
-    pub fn startup(&self, startup_config: String) -> Result<()> {
+    pub fn run_startup_config(&self, startup_config: String) -> Result<()> {
         match self {
-            Self::Holo(holo) => holo.startup(startup_config),
+            Self::Holo(holo) => holo.run_startup_config(startup_config),
             _ => Ok(()),
         }
     }

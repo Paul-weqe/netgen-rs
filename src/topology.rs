@@ -3,19 +3,18 @@ use crate::error::Error;
 use crate::plugins::Config;
 use crate::Result;
 
+use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{Error as IoError, ErrorKind, Read};
+use std::os::fd::AsRawFd;
+use std::time;
+
 use netlink_packet_route::link::LinkFlag;
 use nix::net::if_::if_nametoindex;
 use rand::{distributions::Alphanumeric, Rng};
 use rtnetlink::{new_connection, Handle};
-use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::Read;
-use std::io::{Error as IoError, ErrorKind};
-use std::os::fd::AsRawFd;
-use std::time;
 use tokio;
-use yaml_rust2::yaml::Yaml;
-use yaml_rust2::YamlLoader;
+use yaml_rust2::{yaml::Yaml, YamlLoader};
 
 #[derive(Debug)]
 pub struct Topology {
@@ -238,13 +237,24 @@ impl Topology {
     pub async fn power_on(&mut self) -> Result<()> {
         // powers on all the nodes
         for (_, node) in self.nodes.iter_mut() {
-            // TODO: handle this unwrap, change to ?
-            node.power_on(&self.handle).await.unwrap();
+            node.power_on(&self.handle).await?;
         }
 
         // sets up all the links
         self.setup_links().await?;
         Ok(())
+    }
+
+    /// "Powers off" all the devices in the network.
+    ///
+    /// For switches, this means deleting the bridged interface
+    ///
+    /// For routers, this is deleting the respective namespaces
+    pub async fn power_off(&mut self) {
+        // Powers off all the nodes
+        for (_, node) in self.nodes.iter_mut() {
+            node.power_off(&self.handle).await;
+        }
     }
 
     pub async fn run(&self) -> Result<()> {
@@ -253,11 +263,12 @@ impl Topology {
         }
 
         // Wait for the daemons to come up.
+        println!("waiting for deamons to come up....");
         tokio::time::sleep(time::Duration::from_secs(2)).await;
 
         // Run the startup config for the nodes
         for node in self.nodes.values() {
-            node.startup().await?;
+            node.run_startup_config().await?;
         }
 
         Ok(())
@@ -265,8 +276,8 @@ impl Topology {
 
     pub async fn setup_links(&mut self) -> Result<()> {
         // create links
-        for l in self.links.clone() {
-            self.create_link(&l).await?;
+        for link in self.links.clone() {
+            self.create_link(&link).await?;
         }
 
         // add addresss for links in

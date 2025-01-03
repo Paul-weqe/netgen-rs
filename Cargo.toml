@@ -18,3 +18,5 @@ enum-as-inner = "0.6.1"
 ipnetwork = "0.20.0"
 rand = "0.8.5"
 clap = {version="4.5.23", features = ["default", "cargo"]}
+futures-util = "0.3.31"
+sysinfo = "0.33.1"

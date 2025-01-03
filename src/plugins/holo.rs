@@ -1,5 +1,8 @@
 use crate::Result;
+use crate::PLUGIN_PIDS_FILE;
 
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::process::Command;
 
 #[derive(Debug, Clone)]
@@ -32,6 +35,13 @@ impl Holo {
 
         match command.spawn() {
             Ok(mut child) => {
+                if let Ok(mut file) = OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(PLUGIN_PIDS_FILE)
+                {
+                    let _ = writeln!(file, "{}", child.id());
+                }
                 let _ = child.try_wait();
             }
             Err(_err) => {
@@ -41,8 +51,8 @@ impl Holo {
         Ok(())
     }
 
-    pub fn startup(&self, startup_config: String) -> Result<()> {
-        // run the startup config
+    // Run the router's startup config
+    pub fn run_startup_config(&self, startup_config: String) -> Result<()> {
         let cli_path = format!("{}/holo-cli", self.cli_dir);
         let mut command = Command::new(cli_path);
         command.args(["--file", &startup_config]);
