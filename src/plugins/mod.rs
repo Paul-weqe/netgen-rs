@@ -1,12 +1,12 @@
-use crate::{error::Error, Result};
-
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 
-use yaml_rust2::yaml::Hash;
-use yaml_rust2::yaml::Yaml;
 use yaml_rust2::YamlLoader;
+use yaml_rust2::yaml::{Hash, Yaml};
+
+use crate::Result;
+use crate::error::Error;
 
 mod frr;
 mod holo;
@@ -57,7 +57,8 @@ impl Config {
                 Self::from_yaml_str(contents.as_str())
             }
             None => {
-                let plugins = Plugin::default_hash().values().cloned().collect();
+                let plugins =
+                    Plugin::default_hash().values().cloned().collect();
                 Ok(Self { plugins })
             }
         }
@@ -74,7 +75,9 @@ impl Config {
         for single_config in yaml_data {
             if let Yaml::Hash(configs) = single_config {
                 // look through the plugins
-                if let Some(plugin_params) = configs.get(&Yaml::String("plugins".to_string())) {
+                if let Some(plugin_params) =
+                    configs.get(&Yaml::String("plugins".to_string()))
+                {
                     let plugins = Self::yaml_parse_plugins(plugin_params)?;
                     plugins_configs = plugins;
                 }
@@ -114,10 +117,17 @@ impl Config {
                                 plugins.insert("frr", frr_plugin_config);
                             }
                         }
-                        _ => return Err(Error::InvalidPluginName(name.to_string())),
+                        _ => {
+                            return Err(Error::InvalidPluginName(
+                                name.to_string(),
+                            ));
+                        }
                     }
                 } else {
-                    return Err(Error::IncorrectYamlType(format!("{:?}", plugin_name)));
+                    return Err(Error::IncorrectYamlType(format!(
+                        "{:?}",
+                        plugin_name
+                    )));
                 }
             }
         }
@@ -128,17 +138,23 @@ impl Config {
         let mut holo = Holo::default();
 
         // set holo-daemon path
-        if let Some(daemon_dir) = config.get(&Yaml::String(String::from("daemon-dir"))) {
+        if let Some(daemon_dir) =
+            config.get(&Yaml::String(String::from("daemon-dir")))
+        {
             holo.daemon_dir = daemon_dir.clone().into_string().unwrap();
         }
 
         // set holod cli path
-        if let Some(cli_dir) = config.get(&Yaml::String(String::from("cli-dir"))) {
+        if let Some(cli_dir) =
+            config.get(&Yaml::String(String::from("cli-dir")))
+        {
             holo.cli_dir = cli_dir.clone().into_string().unwrap();
         }
 
         // set holod sysconfdir
-        if let Some(sysconfdir) = config.get(&Yaml::String(String::from("sysconfdir"))) {
+        if let Some(sysconfdir) =
+            config.get(&Yaml::String(String::from("sysconfdir")))
+        {
             holo.sysconfdir = sysconfdir.clone().into_string().unwrap();
         }
 
@@ -157,11 +173,15 @@ impl Config {
     fn frr_config(config: &Hash) -> Option<Plugin> {
         let mut frr = Frr::default();
         // set frr daemon path
-        if let Some(daemon_dir) = config.get(&Yaml::String(String::from("daemon-dir"))) {
+        if let Some(daemon_dir) =
+            config.get(&Yaml::String(String::from("daemon-dir")))
+        {
             frr.daemon_dir = daemon_dir.clone().into_string().unwrap();
         }
         // set frr cli path
-        if let Some(cli_dir) = config.get(&Yaml::String(String::from("cli-dir"))) {
+        if let Some(cli_dir) =
+            config.get(&Yaml::String(String::from("cli-dir")))
+        {
             frr.cli_dir = cli_dir.clone().into_string().unwrap();
         }
         Some(Plugin::Frr(frr))

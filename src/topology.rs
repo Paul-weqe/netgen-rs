@@ -1,8 +1,3 @@
-use crate::devices::{Link, Node, Router, Switch};
-use crate::error::Error;
-use crate::plugins::Config;
-use crate::Result;
-
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Error as IoError, ErrorKind, Read};
@@ -11,10 +6,17 @@ use std::time;
 
 use netlink_packet_route::link::LinkFlag;
 use nix::net::if_::if_nametoindex;
-use rand::{distributions::Alphanumeric, Rng};
-use rtnetlink::{new_connection, Handle};
+use rand::Rng;
+use rand::distributions::Alphanumeric;
+use rtnetlink::{Handle, new_connection};
 use tokio;
-use yaml_rust2::{yaml::Yaml, YamlLoader};
+use yaml_rust2::YamlLoader;
+use yaml_rust2::yaml::Yaml;
+
+use crate::Result;
+use crate::devices::{Link, Node, Router, Switch};
+use crate::error::Error;
+use crate::plugins::Config;
 
 #[derive(Debug)]
 pub struct Topology {
@@ -51,7 +53,8 @@ impl Topology {
             links: vec![],
         };
 
-        let yaml_content = YamlLoader::load_from_str(yaml_str).map_err(Error::ScanError)?;
+        let yaml_content =
+            YamlLoader::load_from_str(yaml_str).map_err(Error::ScanError)?;
         for yaml_group in yaml_content {
             // TODO: handle the unwrap() below
             topology
@@ -61,22 +64,32 @@ impl Topology {
         Ok(topology)
     }
 
-    pub fn parse_topology_config(&mut self, yaml_data: &Yaml, config: &Config) -> Result<()> {
+    pub fn parse_topology_config(
+        &mut self,
+        yaml_data: &Yaml,
+        config: &Config,
+    ) -> Result<()> {
         if let Yaml::Hash(topo_config_group) = yaml_data {
             // fetch the routers
             if let Some(routers_configs) =
                 topo_config_group.get(&Yaml::String(String::from("routers")))
             {
-                if let Ok(routers) = self.parse_router_configs(routers_configs, config) {
+                if let Ok(routers) =
+                    self.parse_router_configs(routers_configs, config)
+                {
                     for router in routers {
                         // check if router exists
                         if self.nodes.contains_key(&router.name) {
-                            let err =
-                                format!("Node {} has been configured more than once", router.name);
-                            let io_err = IoError::new(ErrorKind::Other, err.as_str());
+                            let err = format!(
+                                "Node {} has been configured more than once",
+                                router.name
+                            );
+                            let io_err =
+                                IoError::new(ErrorKind::Other, err.as_str());
                             return Err(Error::IoError(io_err));
                         }
-                        self.nodes.insert(router.name.clone(), Node::Router(router));
+                        self.nodes
+                            .insert(router.name.clone(), Node::Router(router));
                     }
                 } else {
                     // TODO: handle errors thrown when fetching the routers.
@@ -88,15 +101,21 @@ impl Topology {
                 topo_config_group.get(&Yaml::String(String::from("switches")))
             {
                 // TODO: handle the unwrap below
-                if let Ok(switches) = self.parse_switch_configs(switches_configs) {
+                if let Ok(switches) =
+                    self.parse_switch_configs(switches_configs)
+                {
                     for switch in switches {
                         if self.nodes.contains_key(&switch.name) {
-                            let err =
-                                format!("Node {} has been configured more than once", switch.name);
-                            let io_err = IoError::new(ErrorKind::Other, err.as_str());
+                            let err = format!(
+                                "Node {} has been configured more than once",
+                                switch.name
+                            );
+                            let io_err =
+                                IoError::new(ErrorKind::Other, err.as_str());
                             return Err(Error::IoError(io_err));
                         }
-                        self.nodes.insert(switch.name.clone(), Node::Switch(switch));
+                        self.nodes
+                            .insert(switch.name.clone(), Node::Switch(switch));
                     }
                 } else {
                     // TODO: handle errors thrown when fetching the switches
@@ -104,7 +123,8 @@ impl Topology {
             }
 
             // fetch the links
-            if let Some(links_configs) = topo_config_group.get(&Yaml::String(String::from("links")))
+            if let Some(links_configs) =
+                topo_config_group.get(&Yaml::String(String::from("links")))
             {
                 if let Ok(links) = self.parse_links_configs(links_configs) {
                     for link in links {
@@ -114,7 +134,8 @@ impl Topology {
                                 "src node name {} configured in link {:?} does not exist",
                                 link.src_name, link
                             );
-                            let io_err = IoError::new(ErrorKind::Other, err.as_str());
+                            let io_err =
+                                IoError::new(ErrorKind::Other, err.as_str());
                             return Err(Error::IoError(io_err));
                         }
                         if !self.nodes.contains_key(&link.dst_name) {
@@ -122,7 +143,8 @@ impl Topology {
                                 "dst node name {} configured in link {:?} does not exist",
                                 link.dst_name, link
                             );
-                            let io_err = IoError::new(ErrorKind::Other, err.as_str());
+                            let io_err =
+                                IoError::new(ErrorKind::Other, err.as_str());
                             return Err(Error::IoError(io_err));
                         }
 
@@ -133,7 +155,8 @@ impl Topology {
                                 link.src(),
                                 link.dst()
                             );
-                            let io_err = IoError::new(ErrorKind::Other, err.as_str());
+                            let io_err =
+                                IoError::new(ErrorKind::Other, err.as_str());
                             return Err(Error::IoError(io_err));
                         }
                         self.links.push(link);
@@ -155,26 +178,37 @@ impl Topology {
                 if let Yaml::String(router_name) = router_name
                     && let Yaml::Hash(router_config) = router_config
                 {
-                    if let Ok(router) = Router::from_yaml_config(router_name, router_config, config)
-                    {
+                    if let Ok(router) = Router::from_yaml_config(
+                        router_name,
+                        router_config,
+                        config,
+                    ) {
                         routers.push(router);
                     }
                 } else {
-                    return Err(Error::IncorrectYamlType(format!("{:?}", router_name)));
+                    return Err(Error::IncorrectYamlType(format!(
+                        "{:?}",
+                        router_name
+                    )));
                 }
             }
         }
         Ok(routers)
     }
 
-    pub fn parse_switch_configs(&self, switches_configs: &Yaml) -> Result<Vec<Switch>> {
+    pub fn parse_switch_configs(
+        &self,
+        switches_configs: &Yaml,
+    ) -> Result<Vec<Switch>> {
         let mut switches: Vec<Switch> = vec![];
         if let Yaml::Hash(configs) = switches_configs {
             for (switch_name, switch_config) in configs {
                 if let Yaml::String(switch_name) = switch_name
                     && let Yaml::Hash(switch_config) = switch_config
                 {
-                    if let Ok(switch) = Switch::from_yaml_config(switch_name, switch_config) {
+                    if let Ok(switch) =
+                        Switch::from_yaml_config(switch_name, switch_config)
+                    {
                         switches.push(switch);
                     } else {
                         // TODO: handle a case where switch_name is not a string
@@ -186,19 +220,22 @@ impl Topology {
         Ok(switches)
     }
 
-    pub fn parse_links_configs(&self, links_configs: &Yaml) -> Result<Vec<Link>> {
+    pub fn parse_links_configs(
+        &self,
+        links_configs: &Yaml,
+    ) -> Result<Vec<Link>> {
         let mut links: Vec<Link> = vec![];
         if let Yaml::Array(configs) = links_configs {
             for link_config in configs {
                 if let Yaml::Hash(link_config) = link_config {
                     if let Some(Yaml::String(src)) =
                         link_config.get(&Yaml::String(String::from("src")))
-                        && let Some(Yaml::String(src_iface)) =
-                            link_config.get(&Yaml::String(String::from("src-iface")))
+                        && let Some(Yaml::String(src_iface)) = link_config
+                            .get(&Yaml::String(String::from("src-iface")))
                         && let Some(Yaml::String(dst)) =
                             link_config.get(&Yaml::String(String::from("dst")))
-                        && let Some(Yaml::String(dst_iface)) =
-                            link_config.get(&Yaml::String(String::from("dst-iface")))
+                        && let Some(Yaml::String(dst_iface)) = link_config
+                            .get(&Yaml::String(String::from("dst-iface")))
                     {
                         let link = Link {
                             src_name: src.to_string(),

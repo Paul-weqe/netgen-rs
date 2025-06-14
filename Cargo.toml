@@ -1,7 +1,7 @@
 [package]
 name = "netgen"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Paul Wekesa <paul1tw1@gmail.com>"]
 repository = "https://github.com/Paul-weqe/netgen-rs"
 license = "MIT"

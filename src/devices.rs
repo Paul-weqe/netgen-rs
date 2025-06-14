@@ -1,20 +1,21 @@
-use crate::plugins::{Config, Plugin};
-use crate::{error::Error, Result};
-
-use futures_util::TryStreamExt;
 use std::fs::File;
 use std::future::Future;
 use std::io::{Error as IoError, ErrorKind};
 use std::os::fd::AsFd;
 
+use futures_util::TryStreamExt;
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use netlink_packet_route::link::LinkFlag;
 use nix::net::if_::if_nametoindex;
-use nix::sched::{setns, CloneFlags};
+use nix::sched::{CloneFlags, setns};
 use nix::unistd::gettid;
-use rtnetlink::{new_connection, Handle, NetworkNamespace, NETNS_PATH};
-use yaml_rust2::yaml::Hash;
+use rtnetlink::{Handle, NETNS_PATH, NetworkNamespace, new_connection};
 use yaml_rust2::Yaml;
+use yaml_rust2::yaml::Hash;
+
+use crate::Result;
+use crate::error::Error;
+use crate::plugins::{Config, Plugin};
 
 // ==== Interface ====
 #[derive(Debug, Clone)]
@@ -31,7 +32,8 @@ impl Interface {
         })?;
 
         for addr in &self.addresses {
-            let request = handle.address().add(ifindex, addr.ip(), addr.prefix());
+            let request =
+                handle.address().add(ifindex, addr.ip(), addr.prefix());
             request.execute().await.map_err(|_| {
                 let err_msg = format!("Unable to add address {:?}", addr);
                 Error::GeneralError(err_msg)
@@ -47,7 +49,9 @@ impl Interface {
         };
 
         // --- Get the interface's Ipv4 addresses ---
-        if let Some(ipv4_addresses) = yaml_config.get(&Yaml::String(String::from("ipv4"))) {
+        if let Some(ipv4_addresses) =
+            yaml_config.get(&Yaml::String(String::from("ipv4")))
+        {
             if let Yaml::Array(ipv4_addresses) = ipv4_addresses {
                 let mut addr_iter = ipv4_addresses.iter();
                 while let Some(Yaml::String(addr_str)) = addr_iter.next() {
@@ -62,7 +66,9 @@ impl Interface {
         }
 
         // --- Get the interface's Ipv6 addresses ---
-        if let Some(ipv6_addresses) = yaml_config.get(&Yaml::String(String::from("ipv6"))) {
+        if let Some(ipv6_addresses) =
+            yaml_config.get(&Yaml::String(String::from("ipv6")))
+        {
             if let Yaml::Array(ipv6_addresses) = ipv6_addresses {
                 let mut addr_iter = ipv6_addresses.iter();
                 while let Some(Yaml::String(addr_str)) = addr_iter.next() {
@@ -104,11 +110,16 @@ impl Router {
         }
     }
 
-    pub fn from_yaml_config(name: &str, router_config: &Hash, config: &Config) -> Result<Self> {
+    pub fn from_yaml_config(
+        name: &str,
+        router_config: &Hash,
+        config: &Config,
+    ) -> Result<Self> {
         let mut router = Self::new(name);
 
         // == Plugin configs ==
-        if let Some(plugin_config) = router_config.get(&Yaml::String(String::from("plugin")))
+        if let Some(plugin_config) =
+            router_config.get(&Yaml::String(String::from("plugin")))
             && let Yaml::String(plugin_name) = plugin_config
         {
             match plugin_name.as_str() {
@@ -119,7 +130,11 @@ impl Router {
                         }
                     }
                 }
-                _ => return Err(Error::InvalidPluginName(plugin_name.to_string())),
+                _ => {
+                    return Err(Error::InvalidPluginName(
+                        plugin_name.to_string(),
+                    ));
+                }
             }
         } else {
             return Err(Error::GeneralError(String::from(
@@ -135,7 +150,9 @@ impl Router {
                 if let Yaml::String(iface_name) = iface_name
                     && let Yaml::Hash(iface_config) = iface_config
                 {
-                    if let Ok(interface) = Interface::from_yaml_config(iface_name, iface_config) {
+                    if let Ok(interface) =
+                        Interface::from_yaml_config(iface_name, iface_config)
+                    {
                         router.interfaces.push(interface);
                     }
                 } else {
@@ -153,7 +170,9 @@ impl Router {
             if let Yaml::String(startup_config) = startup_config {
                 router.startup_config = Some(startup_config.to_string());
             } else {
-                return Err(Error::IncorrectYamlType(String::from("startup-config")));
+                return Err(Error::IncorrectYamlType(String::from(
+                    "startup-config",
+                )));
             }
         }
         Ok(router)
@@ -192,23 +211,25 @@ impl Router {
     /// router's namespace.
     ///
     /// ```no_run
-    /// use topology::Router;
     /// use std::process::Command;
+    ///
+    /// use topology::Router;
     ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let router = Router::new("r1").await.unwrap();
-    ///     router.in_ns(move || async move {
-    ///         let output = Command::new("ip")
-    ///             .args(vec!["link"]).output();
-    ///         
-    ///         // this will show you the output
-    ///         // of the `ip link` in the router.
-    ///         // If no modifications have been made
-    ///         // to the namespace, should only show
-    ///         // the loopback ("lo") interface
-    ///         println!("{#:?}", output);
-    ///     }).await;
+    ///     router
+    ///         .in_ns(move || async move {
+    ///             let output = Command::new("ip").args(vec!["link"]).output();
+    ///
+    ///             // this will show you the output
+    ///             // of the `ip link` in the router.
+    ///             // If no modifications have been made
+    ///             // to the namespace, should only show
+    ///             // the loopback ("lo") interface
+    ///             println!("{#:?}", output);
+    ///         })
+    ///         .await;
     /// }
     /// ```
     pub async fn in_ns<Fut, T, R>(&self, f: Fut) -> Result<R>
@@ -216,7 +237,8 @@ impl Router {
         Fut: FnOnce() -> T + Send + 'static,
         T: Future<Output = R> + Send,
     {
-        let current_thread_path = format!("/proc/self/task/{}/ns/net", gettid());
+        let current_thread_path =
+            format!("/proc/self/task/{}/ns/net", gettid());
         let current_thread_file = File::open(&current_thread_path).unwrap();
 
         // move into namespace if it has already been created
@@ -285,7 +307,7 @@ impl Router {
     ///
     /// Example:
     /// ```yaml
-    ///
+    /// 
     /// rt2:
     ///   plugin: holo
     ///   interfaces:
@@ -344,7 +366,10 @@ impl Switch {
     ///         - 2001:db8::/96
     /// ```
     /// converted into a yaml_rust2::yaml::Hash;
-    pub fn from_yaml_config(switch_name: &str, switch_config: &Hash) -> Result<Self> {
+    pub fn from_yaml_config(
+        switch_name: &str,
+        switch_config: &Hash,
+    ) -> Result<Self> {
         let mut switch = Self::new(switch_name);
 
         if let Some(Yaml::Hash(interfaces_config)) =
@@ -354,7 +379,8 @@ impl Switch {
                 if let Yaml::String(iface_name) = iface_name
                     && let Yaml::Hash(iface_config) = iface_config
                 {
-                    let interface = Interface::from_yaml_config(iface_name, iface_config)?;
+                    let interface =
+                        Interface::from_yaml_config(iface_name, iface_config)?;
                     switch.interfaces.push(interface);
                 } else {
                     return Err(Error::IncorrectYamlType(String::from(
@@ -375,7 +401,8 @@ impl Switch {
         request.message_mut().header.flags.push(LinkFlag::Up);
         request.message_mut().header.flags.push(LinkFlag::Multicast);
         if let Err(err) = request.execute().await {
-            let e = format!("problem creating bridge {}\n {:#?}", &self.name, err);
+            let e =
+                format!("problem creating bridge {}\n {:#?}", &self.name, err);
             let io_err = IoError::new(ErrorKind::Other, e.as_str());
             return Err(Error::IoError(io_err));
         }
@@ -392,7 +419,8 @@ impl Switch {
     /// Deletes the network bridge representing the switch
     pub async fn power_off(&mut self, handle: &Handle) {
         // Get interface ifindex
-        let mut links = handle.link().get().match_name(self.name.clone()).execute();
+        let mut links =
+            handle.link().get().match_name(self.name.clone()).execute();
 
         let msg = links.try_next().await;
         match msg {
@@ -404,10 +432,16 @@ impl Switch {
                     let request = handle.link().del(ifindex);
                     if let Err(err) = request.execute().await {
                         // TODO: handle logging for this once logging & tracing are setup
-                        println!("problem deleting interface '{}'\n{:#?}", self.name, err);
+                        println!(
+                            "problem deleting interface '{}'\n{:#?}",
+                            self.name, err
+                        );
                     }
                 } else {
-                    println!("problem getting netlink header for '{}'", self.name);
+                    println!(
+                        "problem getting netlink header for '{}'",
+                        self.name
+                    );
                 }
             }
             Err(err) => {
@@ -469,7 +503,9 @@ impl Node {
             Self::Router(router) => {
                 if let Some(plugin) = &router.plugin {
                     let plugin = plugin.clone();
-                    let _ = router.in_ns(move || async move { plugin.run() }).await?;
+                    let _ = router
+                        .in_ns(move || async move { plugin.run() })
+                        .await?;
                 }
                 // TODO: handle when running the routing configs don't work.
                 Ok(())
@@ -485,7 +521,9 @@ impl Node {
             {
                 let plugin = plugin.clone();
                 let _ = router
-                    .in_ns(move || async move { plugin.run_startup_config(startup_config) })
+                    .in_ns(move || async move {
+                        plugin.run_startup_config(startup_config)
+                    })
                     .await?;
             }
         }

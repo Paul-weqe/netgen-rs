@@ -1,14 +1,12 @@
 #![feature(let_chains)]
-use netgen::plugins::Config;
-use netgen::topology::Topology;
-use netgen::PLUGIN_PIDS_FILE;
-use netgen::{error::Error, Result};
-
-use std::fs::File;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::BufRead;
 
-use clap::{command, Arg, ArgMatches};
+use clap::{Arg, ArgMatches, command};
+use netgen::error::Error;
+use netgen::plugins::Config;
+use netgen::topology::Topology;
+use netgen::{PLUGIN_PIDS_FILE, Result};
 use sysinfo::{Pid, System};
 
 #[tokio::main]
@@ -32,7 +30,9 @@ async fn main() -> Result<()> {
 
             // If the file exists, then the topology is currently running
             if File::open(PLUGIN_PIDS_FILE).is_ok() {
-                return Err(Error::GeneralError(String::from("topology is currently running. Consider running 'netgen stop -t my-topo.yml' before starting again")));
+                return Err(Error::GeneralError(String::from(
+                    "topology is currently running. Consider running 'netgen stop -t my-topo.yml' before starting again",
+                )));
             }
 
             File::create(PLUGIN_PIDS_FILE).unwrap();
@@ -52,14 +52,17 @@ async fn main() -> Result<()> {
             topology.power_off().await;
 
             // Kills all the running plugin PIDs
-            if let Ok(file) = OpenOptions::new().read(true).open(PLUGIN_PIDS_FILE) {
+            if let Ok(file) =
+                OpenOptions::new().read(true).open(PLUGIN_PIDS_FILE)
+            {
                 let reader = std::io::BufReader::new(file);
                 let system = System::new_all();
 
                 for line in reader.lines() {
                     if let Ok(line) = line
                         && let Ok(pid) = line.parse::<u32>()
-                        && let Some(process) = system.process(Pid::from_u32(pid))
+                        && let Some(process) =
+                            system.process(Pid::from_u32(pid))
                     {
                         process.kill();
                     }
@@ -105,11 +108,12 @@ fn parse_config_args(config_args: &ArgMatches) -> Result<Topology> {
         None => {
             return Err(Error::GeneralError(String::from(
                 "topolofy file not configured",
-            )))
+            )));
         }
     };
 
     let mut topo_file = File::open(topo_file).unwrap();
-    let topology = Topology::from_yaml_file(&mut topo_file, config.clone()).unwrap();
+    let topology =
+        Topology::from_yaml_file(&mut topo_file, config.clone()).unwrap();
     Ok(topology)
 }

@@ -1,7 +1,8 @@
-use crate::ALLOWED_PLUGINS;
-
 use std::io::Error as IoError;
+
 use yaml_rust2::scanner::ScanError;
+
+use crate::ALLOWED_PLUGINS;
 
 #[derive(Debug)]
 pub enum Error {

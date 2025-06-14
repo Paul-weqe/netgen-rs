@@ -1,9 +1,8 @@
-use crate::Result;
-use crate::PLUGIN_PIDS_FILE;
-
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::process::Command;
+
+use crate::{PLUGIN_PIDS_FILE, Result};
 
 #[derive(Debug, Clone)]
 pub struct Holo {
