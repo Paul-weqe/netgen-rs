@@ -1,7 +1,7 @@
 routers:
   rt1:
-    plugin: holo
-    startup-config: ./assets/rt1.conf
+    # plugin: holo
+    # startup-config: ./assets/rt1.conf
     interfaces:
       lo:
         ipv4: 
@@ -10,10 +10,9 @@ routers:
         ipv4:
         - 10.0.1.1/24
 
-
   rt2:
-    plugin: holo
-    startup-config: ./assets/rt2.conf
+    # plugin: holo
+    # startup-config: ./assets/rt2.conf
     interfaces:
       lo:
         ipv4: 
@@ -23,8 +22,8 @@ routers:
         - 10.0.1.2/24
 
   rt3:
-    plugin: holo 
-    startup-config: ./assets/rt3.conf
+    # plugin: holo
+    # startup-config: ./assets/rt3.conf
     interfaces:
       lo:
         ipv4:
@@ -55,4 +54,3 @@ links:
     src-iface: eth-sw1 
     dst: sw1 
     dst-iface: eth-rt3 
-

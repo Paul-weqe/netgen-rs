@@ -136,10 +136,6 @@ impl Router {
                     ));
                 }
             }
-        } else {
-            return Err(Error::GeneralError(String::from(
-                "field 'plugin' required for device",
-            )));
         }
 
         // == Interface configs ==

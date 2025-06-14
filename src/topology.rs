@@ -73,27 +73,25 @@ impl Topology {
             // fetch the routers
             if let Some(routers_configs) =
                 topo_config_group.get(&Yaml::String(String::from("routers")))
-            {
-                if let Ok(routers) =
+                && let Ok(routers) =
                     self.parse_router_configs(routers_configs, config)
-                {
-                    for router in routers {
-                        // check if router exists
-                        if self.nodes.contains_key(&router.name) {
-                            let err = format!(
-                                "Node {} has been configured more than once",
-                                router.name
-                            );
-                            let io_err =
-                                IoError::new(ErrorKind::Other, err.as_str());
-                            return Err(Error::IoError(io_err));
-                        }
-                        self.nodes
-                            .insert(router.name.clone(), Node::Router(router));
+            {
+                for router in routers {
+                    // check if router exists
+                    if self.nodes.contains_key(&router.name) {
+                        let err = format!(
+                            "Node {} has been configured more than once",
+                            router.name
+                        );
+                        let io_err =
+                            IoError::new(ErrorKind::Other, err.as_str());
+                        return Err(Error::IoError(io_err));
                     }
-                } else {
-                    // TODO: handle errors thrown when fetching the routers.
+                    self.nodes
+                        .insert(router.name.clone(), Node::Router(router));
                 }
+            } else {
+                // TODO: handle errors thrown when fetching the routers.
             }
 
             // fetch the switches
@@ -131,7 +129,7 @@ impl Topology {
                         // check if link devices exist in config
                         if !self.nodes.contains_key(&link.src_name) {
                             let err = format!(
-                                "src node name {} configured in link {:?} does not exist",
+                                "src node name {} configured in {:?} does not exist",
                                 link.src_name, link
                             );
                             let io_err =
@@ -140,7 +138,7 @@ impl Topology {
                         }
                         if !self.nodes.contains_key(&link.dst_name) {
                             let err = format!(
-                                "dst node name {} configured in link {:?} does not exist",
+                                "dst node name {} configured in {:?} does not exist",
                                 link.dst_name, link
                             );
                             let io_err =
@@ -394,7 +392,8 @@ impl Topology {
                         .in_ns(move || async move {
                             let (conn, handle, _) = new_connection().unwrap();
                             tokio::spawn(conn);
-                            // bring the interface up and give it the proper name
+                            // Bring the interface up and give it the proper
+                            // name.
                             handle
                                 .link()
                                 .set(index)
