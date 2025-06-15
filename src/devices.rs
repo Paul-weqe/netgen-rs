@@ -1,21 +1,20 @@
-use std::fs::File;
 use std::future::Future;
-use std::io::{Error as IoError, ErrorKind};
-use std::os::fd::AsFd;
+use std::path::Path;
 
 use futures_util::TryStreamExt;
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use netlink_packet_route::link::LinkFlag;
+use nix::mount::{MsFlags, mount};
 use nix::net::if_::if_nametoindex;
-use nix::sched::{CloneFlags, setns};
-use nix::unistd::gettid;
-use rtnetlink::{Handle, NETNS_PATH, NetworkNamespace, new_connection};
+use nix::sched::{CloneFlags, unshare};
+use nix::unistd::Pid;
+use rtnetlink::{Handle, NetworkNamespace, new_connection};
 use yaml_rust2::Yaml;
 use yaml_rust2::yaml::Hash;
 
-use crate::Result;
 use crate::error::Error;
 use crate::plugins::{Config, Plugin};
+use crate::{NS_DIR, Result};
 
 // ==== Interface ====
 #[derive(Debug, Clone)]
@@ -85,6 +84,63 @@ impl Interface {
     }
 }
 
+// ==== Node ====
+
+#[derive(Debug, Clone)]
+pub(crate) enum Node {
+    Router(Router),
+    Switch(Switch),
+}
+
+impl Node {
+    pub fn power_on(&mut self) -> Result<()> {
+        match self {
+            Self::Router(router) => router.power_on(),
+            Self::Switch(switch) => switch.power_on(),
+        }
+    }
+
+    pub async fn power_off(&mut self, handle: &Handle) {
+        match self {
+            Self::Router(router) => router.power_off().await,
+            Self::Switch(switch) => switch.power_off(handle).await,
+        }
+    }
+
+    // gets the router daemon runing
+    pub async fn run(&self) -> Result<()> {
+        match self {
+            Self::Router(router) => {
+                if let Some(plugin) = &router.plugin {
+                    let plugin = plugin.clone();
+                    let _ = router
+                        .in_ns(move || async move { plugin.run() })
+                        .await?;
+                }
+                // TODO: handle when running the routing configs don't work.
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    pub async fn run_startup_config(&self) -> Result<()> {
+        if let Self::Router(router) = self {
+            if let Some(plugin) = &router.plugin
+                && let Some(startup_config) = router.startup_config.clone()
+            {
+                let plugin = plugin.clone();
+                let _ = router
+                    .in_ns(move || async move {
+                        plugin.run_startup_config(startup_config)
+                    })
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+}
+
 // ==== Router =====
 #[derive(Debug, Clone)]
 pub struct Router {
@@ -92,6 +148,7 @@ pub struct Router {
     pub file_path: Option<String>,
     pub plugin: Option<Plugin>,
     pub interfaces: Vec<Interface>,
+    pub pid: Option<Pid>,
 
     // This will be run when the startup is run
     pub startup_config: Option<String>,
@@ -106,6 +163,7 @@ impl Router {
             file_path: None,
             plugin: None,
             interfaces: vec![],
+            pid: None,
             startup_config: None,
         }
     }
@@ -176,21 +234,38 @@ impl Router {
 
     /// Creates a namespace representing the router
     /// and turns on the loopback interface.
-    pub async fn power_on(&mut self) -> Result<()> {
-        if let Err(err) = NetworkNamespace::add(self.name.clone()).await {
-            let err_msg = format!("unable to create namespace\n {:?}", err);
-            let io_err = IoError::new(ErrorKind::Other, err_msg.as_str());
-            return Err(Error::IoError(io_err));
-        }
-        let mut ns_path = String::new();
-        ns_path.push_str(NETNS_PATH);
-        ns_path.push_str(self.name.as_str());
-        self.file_path = Some(ns_path);
+    pub fn power_on(&mut self) -> Result<()> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            // create the file that will be hooked to the router's namespace.
+            let ns_path = format!("{NS_DIR}/{}", self.name);
+            if let Ok(_) = std::fs::File::create(ns_path.as_str()) {
+                let _ = unshare(CloneFlags::CLONE_NEWNET);
+                let pid = std::process::id();
+                let proc_ns_path = format!("/proc/{}/ns/net", pid);
+                let target_path = Path::new(&ns_path);
 
-        // Make sure the loopback interface of the router is up
-        self.up(String::from("lo")).await?;
-
-        // Add the environment variables for the necessary binaries
+                match mount(
+                    Some(proc_ns_path.as_str()),
+                    target_path.as_os_str(),
+                    None::<&str>,
+                    MsFlags::MS_BIND,
+                    None::<&str>,
+                ) {
+                    Ok(_) => println!(
+                        "successfully created namespace for {}",
+                        self.name
+                    ),
+                    Err(err) => eprintln!(
+                        "error creating namespace for {}: {:?}",
+                        self.name, err
+                    ),
+                }
+            }
+        });
         Ok(())
     }
 
@@ -233,19 +308,23 @@ impl Router {
         Fut: FnOnce() -> T + Send + 'static,
         T: Future<Output = R> + Send,
     {
-        let current_thread_path =
-            format!("/proc/self/task/{}/ns/net", gettid());
-        let current_thread_file = File::open(&current_thread_path).unwrap();
+        //let current_thread_path =
+        //    format!("/proc/{}/ns/net", std::process::id());
+        //let current_thread_file = File::open(&current_thread_path).unwrap();
 
         // move into namespace if it has already been created
-        if let Some(file_path) = &self.file_path {
-            let ns_file = File::open(file_path.as_str()).unwrap();
-            setns(ns_file.as_fd(), CloneFlags::CLONE_NEWNET).unwrap();
-        }
+        //if let Some(file_path) = &self.file_path {
+        //    let ns_file = File::open(file_path.as_str()).unwrap();
+        //
+        //    if let Err(err) = setns(ns_file.as_fd(), CloneFlags::CLONE_NEWNET) {
+        //        println!("!!!!!! ERR");
+        //        panic!("{:?}", err);
+        //    }
+        //}
         let result = (f)().await;
 
         // come back to parent namespace
-        setns(current_thread_file.as_fd(), CloneFlags::CLONE_NEWNET).unwrap();
+        //setns(current_thread_file.as_fd(), CloneFlags::CLONE_NEWNET).unwrap();
 
         Ok(result)
     }
@@ -391,25 +470,30 @@ impl Switch {
     }
 
     /// Initializes a network bridge representing the switch.
-    pub async fn power_on(&mut self, handle: &Handle) -> Result<()> {
+    pub fn power_on(&mut self) -> Result<()> {
         let name = self.name.as_str();
-        let mut request = handle.link().add().bridge(name.into());
-        request.message_mut().header.flags.push(LinkFlag::Up);
-        request.message_mut().header.flags.push(LinkFlag::Multicast);
-        if let Err(err) = request.execute().await {
-            let e =
-                format!("problem creating bridge {}\n {:#?}", &self.name, err);
-            let io_err = IoError::new(ErrorKind::Other, e.as_str());
-            return Err(Error::IoError(io_err));
-        }
 
-        let ifindex = if_nametoindex(name).map_err(|_| {
-            let err_msg = format!("interface {} not found", name);
-            Error::GeneralError(err_msg)
-        })?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
 
-        self.ifindex = Some(ifindex);
-        Ok(())
+        runtime.block_on(async {
+            let (connection, handle, _) = new_connection().unwrap();
+            tokio::spawn(connection);
+
+            let mut request = handle.link().add().bridge(name.into());
+            request.message_mut().header.flags.push(LinkFlag::Up);
+            request.message_mut().header.flags.push(LinkFlag::Multicast);
+            request.execute().await.map_err(|e| {
+                Error::GeneralError(format!(
+                    "Failed to create bridge {}: {}",
+                    name, e
+                ))
+            })?;
+
+            Ok(())
+        })
     }
 
     /// Deletes the network bridge representing the switch
@@ -442,7 +526,7 @@ impl Switch {
             }
             Err(err) => {
                 println!(
-                    "problem fetching interface details for '{}'\n{:#?}",
+                    "problem fetching interface details for '{}'\n{:?}",
                     self.name, err
                 );
             }
@@ -465,63 +549,6 @@ impl Switch {
                     );
                     Error::GeneralError(err_msg)
                 })?;
-        }
-        Ok(())
-    }
-}
-
-// ==== Node ====
-
-#[derive(Debug, Clone)]
-pub(crate) enum Node {
-    Router(Router),
-    Switch(Switch),
-}
-
-impl Node {
-    pub async fn power_on(&mut self, handle: &Handle) -> Result<()> {
-        match self {
-            Self::Router(router) => router.power_on().await,
-            Self::Switch(switch) => switch.power_on(handle).await,
-        }
-    }
-
-    pub async fn power_off(&mut self, handle: &Handle) {
-        match self {
-            Self::Router(router) => router.power_off().await,
-            Self::Switch(switch) => switch.power_off(handle).await,
-        }
-    }
-
-    // gets the router daemon runing
-    pub async fn run(&self) -> Result<()> {
-        match self {
-            Self::Router(router) => {
-                if let Some(plugin) = &router.plugin {
-                    let plugin = plugin.clone();
-                    let _ = router
-                        .in_ns(move || async move { plugin.run() })
-                        .await?;
-                }
-                // TODO: handle when running the routing configs don't work.
-                Ok(())
-            }
-            _ => Ok(()),
-        }
-    }
-
-    pub async fn run_startup_config(&self) -> Result<()> {
-        if let Self::Router(router) = self {
-            if let Some(plugin) = &router.plugin
-                && let Some(startup_config) = router.startup_config.clone()
-            {
-                let plugin = plugin.clone();
-                let _ = router
-                    .in_ns(move || async move {
-                        plugin.run_startup_config(startup_config)
-                    })
-                    .await?;
-            }
         }
         Ok(())
     }

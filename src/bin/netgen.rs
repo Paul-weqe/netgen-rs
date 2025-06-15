@@ -1,16 +1,23 @@
 #![feature(let_chains)]
 use std::fs::{File, OpenOptions};
 use std::io::BufRead;
+use std::process;
 
 use clap::{Arg, ArgMatches, command};
 use netgen::error::Error;
 use netgen::plugins::Config;
 use netgen::topology::Topology;
-use netgen::{PLUGIN_PIDS_FILE, Result};
-use sysinfo::{Pid, System};
+use netgen::{NS_DIR, PLUGIN_PIDS_FILE, Result};
+use nix::sched::{CloneFlags, unshare};
+use nix::unistd::{ForkResult, Pid, fork, pause, setsid};
+use sysinfo::{Pid as SystemPid, System};
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    println!("STARTING PID: {:?}", Pid::this());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let app_match = command!("netgen")
         .subcommand(
             command!("start")
@@ -26,7 +33,11 @@ async fn main() -> Result<()> {
 
     match app_match.subcommand() {
         Some(("start", start_args)) => {
-            let mut topology = parse_config_args(start_args)?;
+            // Create the directory storing our namespaces if it doesn't exists
+            let _ = std::fs::create_dir_all(NS_DIR);
+
+            let mut topology =
+                runtime.block_on(async { parse_config_args(start_args) })?;
 
             // If the file exists, then the topology is currently running
             if File::open(PLUGIN_PIDS_FILE).is_ok() {
@@ -36,20 +47,44 @@ async fn main() -> Result<()> {
             }
 
             File::create(PLUGIN_PIDS_FILE).unwrap();
+            let fork = unsafe { fork() };
+            match fork.expect("Failed to fork") {
+                ForkResult::Child => {
+                    unshare(
+                        CloneFlags::CLONE_NEWNET
+                            | CloneFlags::CLONE_NEWPID
+                            | CloneFlags::CLONE_NEWNS,
+                    )
+                    .expect("Need to be superuser");
+                    setsid().expect("Failed to create a new session");
 
-            // "powers on" all the devices and sets up all the required links
-            topology.power_on().await?;
+                    println!("child PID: {:?}", process::id());
 
-            // Runs the plugins in the routers.
-            // and initiates their startup-config (if present)
-            topology.run().await?;
+                    // "powers on" all the devices and sets up all the
+                    // required links.
+                    let _ = topology.power_on();
+
+                    runtime.block_on(async {
+                        // Runs the plugins in the routers.
+                        // and initiates their startup-config (if present)
+                        topology.run().await.unwrap();
+                    });
+
+                    pause();
+                }
+                _ => {
+                    //
+                }
+            }
         }
         Some(("stop", stop_args)) => {
-            let mut topology = parse_config_args(stop_args)?;
-
+            runtime.block_on(async {
+                if let Ok(mut topology) = parse_config_args(stop_args) {
+                    topology.power_off().await;
+                }
+            });
             // Turns off all the nodes
             // as a result also deletes any dangling veth link
-            topology.power_off().await;
 
             // Kills all the running plugin PIDs
             if let Ok(file) =
@@ -62,7 +97,7 @@ async fn main() -> Result<()> {
                     if let Ok(line) = line
                         && let Ok(pid) = line.parse::<u32>()
                         && let Some(process) =
-                            system.process(Pid::from_u32(pid))
+                            system.process(SystemPid::from_u32(pid))
                     {
                         process.kill();
                     }

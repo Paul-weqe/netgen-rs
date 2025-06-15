@@ -269,14 +269,14 @@ impl Topology {
     ///
     /// For routers, this is creating a new namespace and making sure
     ///     the relevant interfaces are brought up.
-    pub async fn power_on(&mut self) -> Result<()> {
+    pub fn power_on(&mut self) -> Result<()> {
         // powers on all the nodes
         for (_, node) in self.nodes.iter_mut() {
-            node.power_on(&self.handle).await?;
+            node.power_on()?;
         }
 
         // sets up all the links
-        self.setup_links().await?;
+        self.setup_links()?;
         Ok(())
     }
 
@@ -309,17 +309,17 @@ impl Topology {
         Ok(())
     }
 
-    pub async fn setup_links(&mut self) -> Result<()> {
+    pub fn setup_links(&mut self) -> Result<()> {
         // create links
         for link in self.links.clone() {
-            self.create_link(&link).await?;
+            //self.create_link(&link).await?;
         }
 
         // add addresss for links in
         // the router nodes
         for (_, node) in self.nodes.iter_mut() {
             if let Node::Router(router) = node {
-                let _ = &router.add_iface_addresses().await;
+                //let _ = &router.add_iface_addresses().await;
             }
         }
         Ok(())
