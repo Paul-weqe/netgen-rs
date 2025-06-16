@@ -1,14 +1,16 @@
+use std::fs::File;
 use std::future::Future;
+use std::os::fd::AsFd;
 use std::path::Path;
 
 use futures_util::TryStreamExt;
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use netlink_packet_route::link::LinkFlag;
-use nix::mount::{MsFlags, mount};
+use nix::mount::{MsFlags, mount, umount};
 use nix::net::if_::if_nametoindex;
-use nix::sched::{CloneFlags, unshare};
+use nix::sched::{CloneFlags, setns, unshare};
 use nix::unistd::Pid;
-use rtnetlink::{Handle, NetworkNamespace, new_connection};
+use rtnetlink::{Handle, new_connection};
 use yaml_rust2::Yaml;
 use yaml_rust2::yaml::Hash;
 
@@ -100,10 +102,10 @@ impl Node {
         }
     }
 
-    pub async fn power_off(&mut self, handle: &Handle) {
+    pub fn power_off(&mut self) {
         match self {
-            Self::Router(router) => router.power_off().await,
-            Self::Switch(switch) => switch.power_off(handle).await,
+            Self::Router(router) => router.power_off(),
+            Self::Switch(switch) => switch.power_off(),
         }
     }
 
@@ -113,9 +115,8 @@ impl Node {
             Self::Router(router) => {
                 if let Some(plugin) = &router.plugin {
                     let plugin = plugin.clone();
-                    let _ = router
-                        .in_ns(move || async move { plugin.run() })
-                        .await?;
+                    let _ =
+                        router.in_ns(move || async move { plugin.run() })?;
                 }
                 // TODO: handle when running the routing configs don't work.
                 Ok(())
@@ -130,11 +131,9 @@ impl Node {
                 && let Some(startup_config) = router.startup_config.clone()
             {
                 let plugin = plugin.clone();
-                let _ = router
-                    .in_ns(move || async move {
-                        plugin.run_startup_config(startup_config)
-                    })
-                    .await?;
+                let _ = router.in_ns(move || async move {
+                    plugin.run_startup_config(startup_config)
+                })?;
             }
         }
         Ok(())
@@ -270,11 +269,19 @@ impl Router {
     }
 
     /// Deletes the namespace created by the Router (if it exists)
-    pub async fn power_off(&mut self) {
-        if let Err(err) = NetworkNamespace::del(self.name.clone()).await {
-            // TODO: log this problem and end this process Gracefully.
-            // Once logging and tracing are setup.
-            println!("unable to delete namespace\n {:?}", err);
+    pub fn power_off(&mut self) {
+        // create the file that will be hooked to the router's namespace.
+        let ns_path = format!("{NS_DIR}/{}", self.name);
+
+        if let Err(err) = umount(ns_path.as_str()) {
+            eprintln!("error unmounting namespace {} {:?}", self.name, err);
+        }
+
+        // Remove the files.
+        if let Err(err) = std::fs::remove_file(ns_path.as_str()) {
+            eprintln!("error removing namespace file {}: {:?}", self.name, err);
+        } else {
+            println!("successfully deleted namespace for {}", self.name);
         }
     }
 
@@ -303,30 +310,32 @@ impl Router {
     ///         .await;
     /// }
     /// ```
-    pub async fn in_ns<Fut, T, R>(&self, f: Fut) -> Result<R>
+    pub fn in_ns<Fut, T, R>(&self, f: Fut) -> Result<R>
     where
         Fut: FnOnce() -> T + Send + 'static,
         T: Future<Output = R> + Send,
     {
-        //let current_thread_path =
-        //    format!("/proc/{}/ns/net", std::process::id());
-        //let current_thread_file = File::open(&current_thread_path).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            //move into namespace if it has already been created
+            if let Some(file_path) = &self.file_path {
+                let ns_file = File::open(file_path.as_str()).unwrap();
 
-        // move into namespace if it has already been created
-        //if let Some(file_path) = &self.file_path {
-        //    let ns_file = File::open(file_path.as_str()).unwrap();
-        //
-        //    if let Err(err) = setns(ns_file.as_fd(), CloneFlags::CLONE_NEWNET) {
-        //        println!("!!!!!! ERR");
-        //        panic!("{:?}", err);
-        //    }
-        //}
-        let result = (f)().await;
-
-        // come back to parent namespace
-        //setns(current_thread_file.as_fd(), CloneFlags::CLONE_NEWNET).unwrap();
-
-        Ok(result)
+                setns(ns_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
+                    |err| {
+                        let err = format!(
+                            "Unable to enter into {} namespace {:#?}",
+                            self.name, err
+                        );
+                        Error::GeneralError(err)
+                    },
+                )?;
+            }
+            Ok((f)().await)
+        })
     }
 
     /// Brings a specific interface of the router up
@@ -372,8 +381,7 @@ impl Router {
                         Error::GeneralError(err_msg)
                     })?;
                 Ok(())
-            })
-            .await;
+            });
         result?
     }
 
@@ -396,18 +404,16 @@ impl Router {
     /// Above yaml config in topo file will add the address
     /// 10.0.1.2/24 to the eth-sw1 interface and 2.2.2.2/32
     /// to the lo address
-    pub async fn add_iface_addresses(&self) -> Result<()> {
+    pub fn add_iface_addresses(&self) -> Result<()> {
         let interfaces = self.interfaces.clone();
-        let result = self
-            .in_ns(move || async move {
-                let (connection, handle, _) = new_connection().unwrap();
-                tokio::spawn(connection);
-                for iface in interfaces {
-                    iface.add_addresses(&handle).await?;
-                }
-                Ok(())
-            })
-            .await;
+        let result = self.in_ns(move || async move {
+            let (connection, handle, _) = new_connection().unwrap();
+            tokio::spawn(connection);
+            for iface in interfaces {
+                iface.add_addresses(&handle).await?;
+            }
+            Ok(())
+        });
         result?
     }
 }
@@ -497,40 +503,50 @@ impl Switch {
     }
 
     /// Deletes the network bridge representing the switch
-    pub async fn power_off(&mut self, handle: &Handle) {
+    pub fn power_off(&mut self) {
         // Get interface ifindex
-        let mut links =
-            handle.link().get().match_name(self.name.clone()).execute();
 
-        let msg = links.try_next().await;
-        match msg {
-            Ok(msg) => {
-                if let Some(msg) = msg {
-                    let ifindex = msg.header.index;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (connection, handle, _) = new_connection().unwrap();
+            tokio::spawn(connection);
 
-                    // Delete interface
-                    let request = handle.link().del(ifindex);
-                    if let Err(err) = request.execute().await {
-                        // TODO: handle logging for this once logging & tracing are setup
+            let mut links =
+                handle.link().get().match_name(self.name.clone()).execute();
+
+            let msg = links.try_next().await;
+            match msg {
+                Ok(msg) => {
+                    if let Some(msg) = msg {
+                        let ifindex = msg.header.index;
+
+                        // Delete interface
+                        let request = handle.link().del(ifindex);
+                        if let Err(err) = request.execute().await {
+                            // TODO: handle logging for this once logging & tracing are setup
+                            println!(
+                                "problem deleting interface '{}'\n{:#?}",
+                                self.name, err
+                            );
+                        }
+                    } else {
                         println!(
-                            "problem deleting interface '{}'\n{:#?}",
-                            self.name, err
+                            "problem getting netlink header for '{}'",
+                            self.name
                         );
                     }
-                } else {
+                }
+                Err(err) => {
                     println!(
-                        "problem getting netlink header for '{}'",
-                        self.name
+                        "problem fetching interface details for '{}'\n{:?}",
+                        self.name, err
                     );
                 }
             }
-            Err(err) => {
-                println!(
-                    "problem fetching interface details for '{}'\n{:?}",
-                    self.name, err
-                );
-            }
-        }
+        });
     }
 
     /// changes the admin state of the interface to up

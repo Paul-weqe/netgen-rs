@@ -80,7 +80,7 @@ fn main() -> Result<()> {
         Some(("stop", stop_args)) => {
             runtime.block_on(async {
                 if let Ok(mut topology) = parse_config_args(stop_args) {
-                    topology.power_off().await;
+                    topology.power_off();
                 }
             });
             // Turns off all the nodes

@@ -2,13 +2,12 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Error as IoError, ErrorKind, Read};
 use std::os::fd::AsRawFd;
-use std::time;
 
 use netlink_packet_route::link::LinkFlag;
 use nix::net::if_::if_nametoindex;
 use rand::Rng;
 use rand::distributions::Alphanumeric;
-use rtnetlink::{Handle, new_connection};
+use rtnetlink::new_connection;
 use tokio;
 use yaml_rust2::YamlLoader;
 use yaml_rust2::yaml::Yaml;
@@ -20,7 +19,6 @@ use crate::plugins::Config;
 
 #[derive(Debug)]
 pub struct Topology {
-    handle: Handle,
     // String holds the nodename(),
     // Node holds the node object.
     nodes: BTreeMap<String, Node>,
@@ -29,10 +27,7 @@ pub struct Topology {
 
 impl Topology {
     pub fn new() -> Self {
-        let (connection, handle, _) = new_connection().unwrap();
-        tokio::spawn(connection);
         Self {
-            handle,
             nodes: BTreeMap::new(),
             links: vec![],
         }
@@ -45,10 +40,7 @@ impl Topology {
     }
 
     pub fn from_yaml_str(yaml_str: &str, config: Config) -> Result<Self> {
-        let (connection, handle, _) = new_connection().unwrap();
-        tokio::spawn(connection);
         let mut topology = Self {
-            handle,
             nodes: BTreeMap::new(),
             links: vec![],
         };
@@ -285,10 +277,10 @@ impl Topology {
     /// For switches, this means deleting the bridged interface
     ///
     /// For routers, this is deleting the respective namespaces
-    pub async fn power_off(&mut self) {
+    pub fn power_off(&mut self) {
         // Powers off all the nodes
         for (_, node) in self.nodes.iter_mut() {
-            node.power_off(&self.handle).await;
+            node.power_off();
         }
     }
 
@@ -296,10 +288,6 @@ impl Topology {
         for node in self.nodes.values() {
             node.run().await?;
         }
-
-        // Wait for the daemons to come up.
-        println!("waiting for deamons to come up....");
-        tokio::time::sleep(time::Duration::from_secs(2)).await;
 
         // Run the startup config for the nodes
         for node in self.nodes.values() {
@@ -312,21 +300,21 @@ impl Topology {
     pub fn setup_links(&mut self) -> Result<()> {
         // create links
         for link in self.links.clone() {
-            //self.create_link(&link).await?;
+            self.create_link(&link)?;
         }
 
         // add addresss for links in
         // the router nodes
         for (_, node) in self.nodes.iter_mut() {
             if let Node::Router(router) = node {
-                //let _ = &router.add_iface_addresses().await;
+                let _ = &router.add_iface_addresses();
             }
         }
         Ok(())
     }
 
     /// creates a link between two nodes.
-    pub async fn create_link(&mut self, link: &Link) -> Result<()> {
+    pub fn create_link(&mut self, link: &Link) -> Result<()> {
         // generate random names for veth link
         // we do this to avoid conflict in the
         // parent device of interface names.
@@ -345,92 +333,106 @@ impl Topology {
             .map(char::from)
             .collect();
         let node2_link = format!("eth-{link_name}");
-        let mut request = self
-            .handle
-            .link()
-            .add()
-            .veth(node1_link.clone(), node2_link.clone());
-        request.message_mut().header.flags.push(LinkFlag::Up);
-        request.execute().await.unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (connection, handle, _) = new_connection().unwrap();
+            tokio::spawn(connection);
+            let mut request = handle
+                .link()
+                .add()
+                .veth(node1_link.clone(), node2_link.clone());
+            request.message_mut().header.flags.push(LinkFlag::Up);
+            request.execute().await.unwrap();
+        });
         if let Some(src_node) = self.nodes.get(&link.src_name)
             && let Some(dst_node) = self.nodes.get(&link.dst_name)
         {
             // attaches the links to their respective nodes
-            self.attach_link(src_node, node1_link, link.src_iface.clone())
-                .await?;
-            self.attach_link(dst_node, node2_link, link.dst_iface.clone())
-                .await?;
+            self.attach_link(src_node, node1_link, link.src_iface.clone())?;
+            self.attach_link(dst_node, node2_link, link.dst_iface.clone())?;
         }
 
         Ok(())
     }
 
-    async fn attach_link(
+    fn attach_link(
         &self,
         node: &Node,
         current_link_name: String,
         new_link_name: String,
     ) -> Result<()> {
-        // TODO: handle the unwraps in here.
-        match node {
-            Node::Router(router) => {
-                if let Ok(index) = if_nametoindex(current_link_name.as_str())
-                    && let Some(file_path) = &router.file_path
-                    && let Ok(file) = File::open(file_path)
-                {
-                    // move router device to said namespace
-                    self.handle
-                        .link()
-                        .set(index)
-                        .setns_by_fd(file.as_raw_fd())
-                        .execute()
-                        .await
-                        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (connection, handle, _) = new_connection().unwrap();
+            tokio::spawn(connection);
+            match node {
+                Node::Router(router) => {
+                    if let Ok(index) =
+                        if_nametoindex(current_link_name.as_str())
+                        && let Some(file_path) = &router.file_path
+                        && let Ok(file) = File::open(file_path)
+                    {
+                        // move router device to said namespace
+                        handle
+                            .link()
+                            .set(index)
+                            .setns_by_fd(file.as_raw_fd())
+                            .execute()
+                            .await
+                            .unwrap();
 
-                    // rename the interface to it's proper name
-                    router
-                        .in_ns(move || async move {
-                            let (conn, handle, _) = new_connection().unwrap();
-                            tokio::spawn(conn);
-                            // Bring the interface up and give it the proper
-                            // name.
-                            handle
-                                .link()
-                                .set(index)
-                                .up()
-                                .name(new_link_name)
-                                .execute()
-                                .await
-                                // TODO: add a handler for this unwrap()
-                                .unwrap();
-                        })
-                        .await
-                        .unwrap();
+                        // rename the interface to it's proper name
+                        router
+                            .in_ns(move || async move {
+                                let (conn, handle, _) =
+                                    new_connection().unwrap();
+                                tokio::spawn(conn);
+                                // Bring the interface up and give it the proper
+                                // name.
+                                handle
+                                    .link()
+                                    .set(index)
+                                    .up()
+                                    .name(new_link_name)
+                                    .execute()
+                                    .await
+                                    // TODO: add a handler for this unwrap()
+                                    .unwrap();
+                            })
+                            .unwrap();
+                    }
+                }
+                Node::Switch(switch) => {
+                    if let Ok(index) =
+                        if_nametoindex(current_link_name.as_str())
+                        && let Some(ifindex) = switch.ifindex
+                    {
+                        handle
+                            .link()
+                            .set(index)
+                            .name(new_link_name)
+                            .up()
+                            .execute()
+                            .await
+                            .unwrap();
+                        handle
+                            .link()
+                            .set(index)
+                            .controller(ifindex)
+                            .execute()
+                            .await
+                            .unwrap();
+                    }
                 }
             }
-            Node::Switch(switch) => {
-                if let Ok(index) = if_nametoindex(current_link_name.as_str())
-                    && let Some(ifindex) = switch.ifindex
-                {
-                    self.handle
-                        .link()
-                        .set(index)
-                        .name(new_link_name)
-                        .up()
-                        .execute()
-                        .await
-                        .unwrap();
-                    self.handle
-                        .link()
-                        .set(index)
-                        .controller(ifindex)
-                        .execute()
-                        .await
-                        .unwrap();
-                }
-            }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 }
 
