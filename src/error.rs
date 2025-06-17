@@ -26,12 +26,11 @@ impl std::fmt::Display for Error {
             Self::InvalidPluginName(plugin_name) => {
                 write!(
                     f,
-                    "Invalid plugin name {}. \nAllowed plugins => {:?}",
-                    plugin_name, ALLOWED_PLUGINS
+                    "Invalid plugin name {plugin_name}. \nAllowed plugins => {ALLOWED_PLUGINS:?}",
                 )
             }
             Self::IncorrectYamlType(name) => {
-                write!(f, "Incorrect yaml type for field \"{}\".", name)
+                write!(f, "Incorrect yaml type for field \"{name}\".")
             }
         }
     }

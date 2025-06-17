@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{Error as IoError, ErrorKind, Read};
+use std::io::{Error as IoError, Read};
 use std::os::fd::AsRawFd;
 
 use netlink_packet_route::link::LinkFlag;
@@ -75,8 +75,7 @@ impl Topology {
                             "Node {} has been configured more than once",
                             router.name
                         );
-                        let io_err =
-                            IoError::new(ErrorKind::Other, err.as_str());
+                        let io_err = IoError::other(err.as_str());
                         return Err(Error::IoError(io_err));
                     }
                     self.nodes
@@ -100,8 +99,7 @@ impl Topology {
                                 "Node {} has been configured more than once",
                                 switch.name
                             );
-                            let io_err =
-                                IoError::new(ErrorKind::Other, err.as_str());
+                            let io_err = IoError::other(err.as_str());
                             return Err(Error::IoError(io_err));
                         }
                         self.nodes
@@ -115,42 +113,38 @@ impl Topology {
             // fetch the links
             if let Some(links_configs) =
                 topo_config_group.get(&Yaml::String(String::from("links")))
+                && let Ok(links) = self.parse_links_configs(links_configs)
             {
-                if let Ok(links) = self.parse_links_configs(links_configs) {
-                    for link in links {
-                        // check if link devices exist in config
-                        if !self.nodes.contains_key(&link.src_name) {
-                            let err = format!(
-                                "src node name {} configured in {:?} does not exist",
-                                link.src_name, link
-                            );
-                            let io_err =
-                                IoError::new(ErrorKind::Other, err.as_str());
-                            return Err(Error::IoError(io_err));
-                        }
-                        if !self.nodes.contains_key(&link.dst_name) {
-                            let err = format!(
-                                "dst node name {} configured in {:?} does not exist",
-                                link.dst_name, link
-                            );
-                            let io_err =
-                                IoError::new(ErrorKind::Other, err.as_str());
-                            return Err(Error::IoError(io_err));
-                        }
-
-                        // check if link has already been configured.
-                        if self.link_exists(&link) {
-                            let err = format!(
-                                "link {} <-> {} has been configured more than once",
-                                link.src(),
-                                link.dst()
-                            );
-                            let io_err =
-                                IoError::new(ErrorKind::Other, err.as_str());
-                            return Err(Error::IoError(io_err));
-                        }
-                        self.links.push(link);
+                for link in links {
+                    // check if link devices exist in config
+                    if !self.nodes.contains_key(&link.src_name) {
+                        let err = format!(
+                            "src node name {} configured in {:?} does not exist",
+                            link.src_name, link
+                        );
+                        let io_err = IoError::other(err.as_str());
+                        return Err(Error::IoError(io_err));
                     }
+                    if !self.nodes.contains_key(&link.dst_name) {
+                        let err = format!(
+                            "dst node name {} configured in {:?} does not exist",
+                            link.dst_name, link
+                        );
+                        let io_err = IoError::other(err.as_str());
+                        return Err(Error::IoError(io_err));
+                    }
+
+                    // check if link has already been configured.
+                    if self.link_exists(&link) {
+                        let err = format!(
+                            "link {} <-> {} has been configured more than once",
+                            link.src(),
+                            link.dst()
+                        );
+                        let io_err = IoError::other(err.as_str());
+                        return Err(Error::IoError(io_err));
+                    }
+                    self.links.push(link);
                 }
             }
         }
@@ -177,8 +171,7 @@ impl Topology {
                     }
                 } else {
                     return Err(Error::IncorrectYamlType(format!(
-                        "{:?}",
-                        router_name
+                        "{router_name:?}",
                     )));
                 }
             }

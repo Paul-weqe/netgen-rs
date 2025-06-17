@@ -125,8 +125,7 @@ impl Config {
                     }
                 } else {
                     return Err(Error::IncorrectYamlType(format!(
-                        "{:?}",
-                        plugin_name
+                        "{plugin_name:?}",
                     )));
                 }
             }

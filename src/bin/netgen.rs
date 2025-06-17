@@ -65,7 +65,7 @@ fn main() -> Result<()> {
 
                     // "powers on" all the devices and sets up all the
                     // required links.
-                    let _ = topology.power_on()?;
+                    topology.power_on()?;
 
                     pause();
                 }

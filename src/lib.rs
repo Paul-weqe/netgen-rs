@@ -25,7 +25,7 @@ pub fn mount_device(device_name: Option<String>, pid: Pid) -> Result<String> {
         None => format!("{NS_DIR}/main"),
     };
 
-    if let Ok(_) = std::fs::File::create(ns_path.as_str()) {
+    if std::fs::File::create(ns_path.as_str()).is_ok() {
         let _ = unshare(CloneFlags::CLONE_NEWNET);
         let proc_ns_path = format!("/proc/{}/ns/net", pid.as_raw());
         let target_path = Path::new(&ns_path);
@@ -39,8 +39,7 @@ pub fn mount_device(device_name: Option<String>, pid: Pid) -> Result<String> {
         )
         .map_err(|err| {
             error::Error::GeneralError(format!(
-                "unable to mount PID {ns_path} on {proc_ns_path} -> {:?}",
-                err
+                "unable to mount PID {ns_path} on {proc_ns_path} -> {err:?}",
             ))
         })?;
     } else {
@@ -49,5 +48,5 @@ pub fn mount_device(device_name: Option<String>, pid: Pid) -> Result<String> {
         )));
     }
 
-    return Ok(ns_path);
+    Ok(ns_path)
 }

@@ -35,7 +35,7 @@ impl Interface {
             let request =
                 handle.address().add(ifindex, addr.ip(), addr.prefix());
             request.execute().await.map_err(|_| {
-                let err_msg = format!("Unable to add address {:?}", addr);
+                let err_msg = format!("Unable to add address {addr}");
                 Error::GeneralError(err_msg)
             })?;
         }
@@ -286,9 +286,9 @@ impl Router {
                 {
                     Ok(result)
                 } else {
-                    Err(Error::GeneralError(format!(
-                        "unable to move back to main namespace"
-                    )))
+                    Err(Error::GeneralError(
+                        "unable to move back to main namespace".to_string(),
+                    ))
                 }
             }
             None => Err(Error::GeneralError(format!(
@@ -414,8 +414,7 @@ impl Switch {
             request.message_mut().header.flags.push(LinkFlag::Multicast);
             request.execute().await.map_err(|e| {
                 Error::GeneralError(format!(
-                    "Failed to create bridge {}: {}",
-                    name, e
+                    "Failed to create bridge {name}: {e}",
                 ))
             })?;
 
