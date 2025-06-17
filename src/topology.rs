@@ -284,19 +284,6 @@ impl Topology {
         }
     }
 
-    pub async fn run(&self) -> Result<()> {
-        for node in self.nodes.values() {
-            node.run().await?;
-        }
-
-        // Run the startup config for the nodes
-        for node in self.nodes.values() {
-            node.run_startup_config().await?;
-        }
-
-        Ok(())
-    }
-
     pub fn setup_links(&mut self) -> Result<()> {
         // create links
         for link in self.links.clone() {
@@ -405,6 +392,7 @@ impl Topology {
                                     // TODO: add a handler for this unwrap()
                                     .unwrap();
                             })
+                            .await
                             .unwrap();
                     }
                 }

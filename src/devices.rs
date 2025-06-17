@@ -1,14 +1,13 @@
 use std::fs::File;
 use std::future::Future;
 use std::os::fd::AsFd;
-use std::path::Path;
 
 use futures_util::TryStreamExt;
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use netlink_packet_route::link::LinkFlag;
-use nix::mount::{MsFlags, mount, umount};
+use nix::mount::umount;
 use nix::net::if_::if_nametoindex;
-use nix::sched::{CloneFlags, setns, unshare};
+use nix::sched::{CloneFlags, setns};
 use nix::unistd::Pid;
 use rtnetlink::{Handle, new_connection};
 use yaml_rust2::Yaml;
@@ -16,7 +15,7 @@ use yaml_rust2::yaml::Hash;
 
 use crate::error::Error;
 use crate::plugins::{Config, Plugin};
-use crate::{NS_DIR, Result};
+use crate::{DEVICES_NS_DIR, NS_DIR, Result, mount_device};
 
 // ==== Interface ====
 #[derive(Debug, Clone)]
@@ -107,36 +106,6 @@ impl Node {
             Self::Router(router) => router.power_off(),
             Self::Switch(switch) => switch.power_off(),
         }
-    }
-
-    // gets the router daemon runing
-    pub async fn run(&self) -> Result<()> {
-        match self {
-            Self::Router(router) => {
-                if let Some(plugin) = &router.plugin {
-                    let plugin = plugin.clone();
-                    let _ =
-                        router.in_ns(move || async move { plugin.run() })?;
-                }
-                // TODO: handle when running the routing configs don't work.
-                Ok(())
-            }
-            _ => Ok(()),
-        }
-    }
-
-    pub async fn run_startup_config(&self) -> Result<()> {
-        if let Self::Router(router) = self {
-            if let Some(plugin) = &router.plugin
-                && let Some(startup_config) = router.startup_config.clone()
-            {
-                let plugin = plugin.clone();
-                let _ = router.in_ns(move || async move {
-                    plugin.run_startup_config(startup_config)
-                })?;
-            }
-        }
-        Ok(())
     }
 }
 
@@ -239,39 +208,16 @@ impl Router {
             .build()
             .unwrap();
         runtime.block_on(async {
-            // create the file that will be hooked to the router's namespace.
-            let ns_path = format!("{NS_DIR}/{}", self.name);
-            if let Ok(_) = std::fs::File::create(ns_path.as_str()) {
-                let _ = unshare(CloneFlags::CLONE_NEWNET);
-                let pid = std::process::id();
-                let proc_ns_path = format!("/proc/{}/ns/net", pid);
-                let target_path = Path::new(&ns_path);
-
-                match mount(
-                    Some(proc_ns_path.as_str()),
-                    target_path.as_os_str(),
-                    None::<&str>,
-                    MsFlags::MS_BIND,
-                    None::<&str>,
-                ) {
-                    Ok(_) => println!(
-                        "successfully created namespace for {}",
-                        self.name
-                    ),
-                    Err(err) => eprintln!(
-                        "error creating namespace for {}: {:?}",
-                        self.name, err
-                    ),
-                }
-            }
-        });
-        Ok(())
+            let file_path = mount_device(Some(self.name.clone()), Pid::this())?;
+            self.file_path = Some(file_path);
+            Ok::<(), Error>(())
+        })
     }
 
     /// Deletes the namespace created by the Router (if it exists)
     pub fn power_off(&mut self) {
         // create the file that will be hooked to the router's namespace.
-        let ns_path = format!("{NS_DIR}/{}", self.name);
+        let ns_path = format!("{DEVICES_NS_DIR}/{}", self.name);
 
         if let Err(err) = umount(ns_path.as_str()) {
             eprintln!("error unmounting namespace {} {:?}", self.name, err);
@@ -310,18 +256,14 @@ impl Router {
     ///         .await;
     /// }
     /// ```
-    pub fn in_ns<Fut, T, R>(&self, f: Fut) -> Result<R>
+    pub async fn in_ns<Fut, T, R>(&self, f: Fut) -> Result<R>
     where
         Fut: FnOnce() -> T + Send + 'static,
         T: Future<Output = R> + Send,
     {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            //move into namespace if it has already been created
-            if let Some(file_path) = &self.file_path {
+        match &self.file_path {
+            Some(file_path) => {
+                // Move into the Router namespace.
                 let ns_file = File::open(file_path.as_str()).unwrap();
 
                 setns(ns_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
@@ -333,56 +275,27 @@ impl Router {
                         Error::GeneralError(err)
                     },
                 )?;
+
+                let result = (f)().await;
+
+                // Go back to the main namespace.
+                let main_namespace_path = format!("{NS_DIR}/main");
+                if let Ok(main_file) = File::open(main_namespace_path.as_str())
+                    && let Ok(_) =
+                        setns(main_file.as_fd(), CloneFlags::CLONE_NEWNET)
+                {
+                    Ok(result)
+                } else {
+                    Err(Error::GeneralError(format!(
+                        "unable to move back to main namespace"
+                    )))
+                }
             }
-            Ok((f)().await)
-        })
-    }
-
-    /// Brings a specific interface of the router up
-    /// administratively.
-    ///
-    /// ```no_run
-    /// // here, we create the br1 bridge
-    /// // We will first create the interface
-    /// // then bring it up
-    ///
-    /// use topology::Router;
-    ///
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let router = Router::new("r1").await.unwrap();
-    ///     // brings up the loopback interface
-    ///     router.up("lo").await;
-    /// }
-    /// ```
-    pub async fn up(&self, iface_name: String) -> Result<()> {
-        let router_name = self.name.clone();
-        let result = self
-            .in_ns(move || async move {
-                let (connection, handle, _) = new_connection().unwrap();
-                let ifindex = if_nametoindex(iface_name.as_str()).map_err(|_| {
-                    let err_msg = format!("Router interface '{}:{}' not found", router_name, iface_name);
-                    Error::GeneralError(err_msg)
-                })?;
-
-                tokio::spawn(connection);
-
-                handle
-                    .link()
-                    .set(ifindex)
-                    .up()
-                    .execute()
-                    .await
-                    .map_err(|err| {
-                        let err_msg = format!(
-                            "Unable to change Router '{}' interface '{}' state to up. Netlink Error: {:?}",
-                            router_name, iface_name, err
-                        );
-                        Error::GeneralError(err_msg)
-                    })?;
-                Ok(())
-            });
-        result?
+            None => Err(Error::GeneralError(format!(
+                "namespace fd {:?} not found",
+                self.file_path
+            ))),
+        }
     }
 
     /// adds the addresses of the said router as
@@ -406,15 +319,23 @@ impl Router {
     /// to the lo address
     pub fn add_iface_addresses(&self) -> Result<()> {
         let interfaces = self.interfaces.clone();
-        let result = self.in_ns(move || async move {
-            let (connection, handle, _) = new_connection().unwrap();
-            tokio::spawn(connection);
-            for iface in interfaces {
-                iface.add_addresses(&handle).await?;
-            }
-            Ok(())
-        });
-        result?
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            self.in_ns(move || async move {
+                let (connection, handle, _) = new_connection().unwrap();
+                tokio::spawn(connection);
+                for iface in interfaces {
+                    iface.add_addresses(&handle).await?;
+                }
+                Ok(())
+            })
+            .await?
+        })
     }
 }
 
@@ -547,26 +468,6 @@ impl Switch {
                 }
             }
         });
-    }
-
-    /// changes the admin state of the interface to up
-    pub async fn up(&mut self, handle: &Handle) -> Result<()> {
-        if let Some(ifindex) = self.ifindex {
-            handle
-                .link()
-                .set(ifindex)
-                .up()
-                .execute()
-                .await
-                .map_err(|err| {
-                    let err_msg = format!(
-                        "Unable to change '{}' admin state to up.\n Netlink Error: {:?}",
-                        self.name, err
-                    );
-                    Error::GeneralError(err_msg)
-                })?;
-        }
-        Ok(())
     }
 }
 

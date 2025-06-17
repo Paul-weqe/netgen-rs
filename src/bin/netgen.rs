@@ -1,4 +1,5 @@
 #![feature(let_chains)]
+
 use std::fs::{File, OpenOptions};
 use std::io::BufRead;
 use std::process;
@@ -7,13 +8,12 @@ use clap::{Arg, ArgMatches, command};
 use netgen::error::Error;
 use netgen::plugins::Config;
 use netgen::topology::Topology;
-use netgen::{NS_DIR, PLUGIN_PIDS_FILE, Result};
+use netgen::{DEVICES_NS_DIR, PLUGIN_PIDS_FILE, Result, mount_device};
 use nix::sched::{CloneFlags, unshare};
 use nix::unistd::{ForkResult, Pid, fork, pause, setsid};
 use sysinfo::{Pid as SystemPid, System};
 
 fn main() -> Result<()> {
-    println!("STARTING PID: {:?}", Pid::this());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -34,7 +34,7 @@ fn main() -> Result<()> {
     match app_match.subcommand() {
         Some(("start", start_args)) => {
             // Create the directory storing our namespaces if it doesn't exists
-            let _ = std::fs::create_dir_all(NS_DIR);
+            let _ = std::fs::create_dir_all(DEVICES_NS_DIR);
 
             let mut topology =
                 runtime.block_on(async { parse_config_args(start_args) })?;
@@ -58,17 +58,14 @@ fn main() -> Result<()> {
                     .expect("Need to be superuser");
                     setsid().expect("Failed to create a new session");
 
+                    let pid = Pid::this();
+                    let _ = mount_device(None, pid)?;
+
                     println!("child PID: {:?}", process::id());
 
                     // "powers on" all the devices and sets up all the
                     // required links.
-                    let _ = topology.power_on();
-
-                    runtime.block_on(async {
-                        // Runs the plugins in the routers.
-                        // and initiates their startup-config (if present)
-                        topology.run().await.unwrap();
-                    });
+                    let _ = topology.power_on()?;
 
                     pause();
                 }
