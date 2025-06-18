@@ -3,11 +3,10 @@ use std::fs::File;
 use std::io::{Error as IoError, Read};
 use std::os::fd::AsRawFd;
 
-use netlink_packet_route::link::LinkFlag;
 use nix::net::if_::if_nametoindex;
 use rand::Rng;
 use rand::distributions::Alphanumeric;
-use rtnetlink::new_connection;
+use rtnetlink::{LinkUnspec, LinkVeth, new_connection};
 use tokio;
 use tokio::runtime::Runtime;
 use yaml_rust2::YamlLoader;
@@ -82,7 +81,6 @@ impl Topology {
             if let Some(switches_configs) =
                 topo_config_group.get(&Yaml::String(String::from("switches")))
             {
-                // TODO: handle the unwrap below
                 if let Ok(switches) =
                     self.parse_switch_configs(switches_configs)
                 {
@@ -314,11 +312,10 @@ impl Topology {
         runtime.block_on(async {
             let (connection, handle, _) = new_connection().unwrap();
             tokio::spawn(connection);
-            let mut request = handle
-                .link()
-                .add()
-                .veth(node1_link.clone(), node2_link.clone());
-            request.message_mut().header.flags.push(LinkFlag::Up);
+            let request = handle.link().add(
+                LinkVeth::new(node1_link.as_str(), node2_link.as_str()).build(),
+            );
+            //request.message_mut().header.flags.push(LinkFlag::Up);
             request.execute().await.unwrap();
         });
         if let Some(src_node) = self.nodes.get(&link.src_name)
@@ -359,14 +356,12 @@ impl Topology {
                         && let Some(file_path) = &router.file_path
                         && let Ok(file) = File::open(file_path)
                     {
-                        // move router device to said namespace
-                        handle
-                            .link()
-                            .set(index)
+                        let message = LinkUnspec::new_with_index(index)
                             .setns_by_fd(file.as_raw_fd())
-                            .execute()
-                            .await
-                            .unwrap();
+                            .build();
+                        // move router device to said namespace
+                        handle.link().set(message).execute().await.unwrap();
+                        let nodename = router.name.clone();
 
                         // rename the interface to it's proper name
                         router
@@ -374,17 +369,21 @@ impl Topology {
                                 let (conn, handle, _) =
                                     new_connection().unwrap();
                                 tokio::spawn(conn);
+
+                                let message = LinkUnspec::new_with_index(index)
+                                    .name(new_link_name)
+                                    .up()
+                                    .build();
                                 // Bring the interface up and give it the proper
                                 // name.
-                                handle
-                                    .link()
-                                    .set(index)
-                                    .up()
-                                    .name(new_link_name)
-                                    .execute()
-                                    .await
-                                    // TODO: add a handler for this unwrap()
-                                    .unwrap();
+                                if let Err(err) =
+                                    handle.link().set(message).execute().await
+                                {
+                                    eprintln!(
+                                        "error bringing {:?}::{:?} up -> {:?}",
+                                        nodename, current_link_name, err
+                                    );
+                                }
                             })
                             .await
                             .unwrap();
@@ -395,21 +394,30 @@ impl Topology {
                         if_nametoindex(current_link_name.as_str())
                         && let Some(ifindex) = switch.ifindex
                     {
-                        handle
-                            .link()
-                            .set(index)
+                        let message = LinkUnspec::new_with_index(index)
                             .name(new_link_name)
                             .up()
-                            .execute()
-                            .await
-                            .unwrap();
-                        handle
-                            .link()
-                            .set(index)
+                            .build();
+                        if let Err(err) =
+                            handle.link().set(message).execute().await
+                        {
+                            eprintln!(
+                                "error changing {}::{} name -> {:?}",
+                                switch.name, current_link_name, err
+                            );
+                        }
+
+                        let message = LinkUnspec::new_with_index(index)
                             .controller(ifindex)
-                            .execute()
-                            .await
-                            .unwrap();
+                            .build();
+                        if let Err(err) =
+                            handle.link().set(message).execute().await
+                        {
+                            eprintln!(
+                                "error changing {}::{} controller -> {:?}",
+                                switch.name, current_link_name, err
+                            );
+                        }
                     }
                 }
             }

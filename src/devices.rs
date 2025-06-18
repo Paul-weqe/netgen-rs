@@ -3,12 +3,11 @@ use std::future::Future;
 use std::os::fd::AsFd;
 
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
-use netlink_packet_route::link::LinkFlag;
 use nix::mount::umount;
 use nix::net::if_::if_nametoindex;
 use nix::sched::{CloneFlags, setns};
 use nix::unistd::Pid;
-use rtnetlink::{Handle, new_connection};
+use rtnetlink::{Handle, LinkBridge, new_connection};
 use tokio::runtime::Runtime;
 use yaml_rust2::Yaml;
 use yaml_rust2::yaml::Hash;
@@ -364,9 +363,9 @@ impl Switch {
             let (connection, handle, _) = new_connection().unwrap();
             tokio::spawn(connection);
 
-            let mut request = handle.link().add().bridge(name.into());
-            request.message_mut().header.flags.push(LinkFlag::Up);
-            request.message_mut().header.flags.push(LinkFlag::Multicast);
+            let message = LinkBridge::new(name).up().build();
+            let request = handle.link().add(message);
+
             request.execute().await.map_err(|e| {
                 Error::GeneralError(format!(
                     "Failed to create bridge {name}: {e}",
