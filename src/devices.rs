@@ -2,7 +2,6 @@ use std::fs::File;
 use std::future::Future;
 use std::os::fd::AsFd;
 
-use futures_util::TryStreamExt;
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use netlink_packet_route::link::LinkFlag;
 use nix::mount::umount;
@@ -14,7 +13,6 @@ use yaml_rust2::Yaml;
 use yaml_rust2::yaml::Hash;
 
 use crate::error::Error;
-use crate::plugins::{Config, Plugin};
 use crate::{DEVICES_NS_DIR, NS_DIR, Result, mount_device};
 
 // ==== Interface ====
@@ -114,7 +112,6 @@ impl Node {
 pub struct Router {
     pub name: String,
     pub file_path: Option<String>,
-    pub plugin: Option<Plugin>,
     pub interfaces: Vec<Interface>,
     pub pid: Option<Pid>,
 
@@ -129,40 +126,14 @@ impl Router {
         Self {
             name: name.to_string(),
             file_path: None,
-            plugin: None,
             interfaces: vec![],
             pid: None,
             startup_config: None,
         }
     }
 
-    pub fn from_yaml_config(
-        name: &str,
-        router_config: &Hash,
-        config: &Config,
-    ) -> Result<Self> {
+    pub fn from_yaml_config(name: &str, router_config: &Hash) -> Result<Self> {
         let mut router = Self::new(name);
-
-        // == Plugin configs ==
-        if let Some(plugin_config) =
-            router_config.get(&Yaml::String(String::from("plugin")))
-            && let Yaml::String(plugin_name) = plugin_config
-        {
-            match plugin_name.as_str() {
-                "holo" => {
-                    for plugin in &config.plugins {
-                        if let Plugin::Holo(_) = plugin {
-                            router.plugin = Some(plugin.clone());
-                        }
-                    }
-                }
-                _ => {
-                    return Err(Error::InvalidPluginName(
-                        plugin_name.to_string(),
-                    ));
-                }
-            }
-        }
 
         // == Interface configs ==
         if let Some(Yaml::Hash(interfaces_config)) =
@@ -227,7 +198,7 @@ impl Router {
         if let Err(err) = std::fs::remove_file(ns_path.as_str()) {
             eprintln!("error removing namespace file {}: {:?}", self.name, err);
         } else {
-            println!("successfully deleted namespace for {}", self.name);
+            println!("deleted {}", self.name);
         }
     }
 
@@ -305,7 +276,6 @@ impl Router {
     /// ```yaml
     /// 
     /// rt2:
-    ///   plugin: holo
     ///   interfaces:
     ///     lo:
     ///       ipv4:
@@ -422,51 +392,10 @@ impl Switch {
         })
     }
 
-    /// Deletes the network bridge representing the switch
+    /// Switch does not run in dedicated namespace thus no need to unmount.
     pub fn power_off(&mut self) {
-        // Get interface ifindex
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            let (connection, handle, _) = new_connection().unwrap();
-            tokio::spawn(connection);
-
-            let mut links =
-                handle.link().get().match_name(self.name.clone()).execute();
-
-            let msg = links.try_next().await;
-            match msg {
-                Ok(msg) => {
-                    if let Some(msg) = msg {
-                        let ifindex = msg.header.index;
-
-                        // Delete interface
-                        let request = handle.link().del(ifindex);
-                        if let Err(err) = request.execute().await {
-                            // TODO: handle logging for this once logging & tracing are setup
-                            println!(
-                                "problem deleting interface '{}'\n{:#?}",
-                                self.name, err
-                            );
-                        }
-                    } else {
-                        println!(
-                            "problem getting netlink header for '{}'",
-                            self.name
-                        );
-                    }
-                }
-                Err(err) => {
-                    println!(
-                        "problem fetching interface details for '{}'\n{:?}",
-                        self.name, err
-                    );
-                }
-            }
-        });
+        println!("deleted {}", self.name);
+        // Powering off...I guess.
     }
 }
 

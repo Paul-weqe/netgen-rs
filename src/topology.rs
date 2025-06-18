@@ -15,7 +15,6 @@ use yaml_rust2::yaml::Yaml;
 use crate::Result;
 use crate::devices::{Link, Node, Router, Switch};
 use crate::error::Error;
-use crate::plugins::Config;
 
 #[derive(Debug)]
 pub struct Topology {
@@ -33,13 +32,13 @@ impl Topology {
         }
     }
 
-    pub fn from_yaml_file(file: &mut File, config: Config) -> Result<Self> {
+    pub fn from_yaml_file(file: &mut File) -> Result<Self> {
         let mut contents = String::new();
         let _ = file.read_to_string(&mut contents);
-        Self::from_yaml_str(contents.as_str(), config)
+        Self::from_yaml_str(contents.as_str())
     }
 
-    pub fn from_yaml_str(yaml_str: &str, config: Config) -> Result<Self> {
+    pub fn from_yaml_str(yaml_str: &str) -> Result<Self> {
         let mut topology = Self {
             nodes: BTreeMap::new(),
             links: vec![],
@@ -49,24 +48,17 @@ impl Topology {
             YamlLoader::load_from_str(yaml_str).map_err(Error::ScanError)?;
         for yaml_group in yaml_content {
             // TODO: handle the unwrap() below
-            topology
-                .parse_topology_config(&yaml_group, &config)
-                .unwrap();
+            topology.parse_topology_config(&yaml_group).unwrap();
         }
         Ok(topology)
     }
 
-    pub fn parse_topology_config(
-        &mut self,
-        yaml_data: &Yaml,
-        config: &Config,
-    ) -> Result<()> {
+    pub fn parse_topology_config(&mut self, yaml_data: &Yaml) -> Result<()> {
         if let Yaml::Hash(topo_config_group) = yaml_data {
             // fetch the routers
             if let Some(routers_configs) =
                 topo_config_group.get(&Yaml::String(String::from("routers")))
-                && let Ok(routers) =
-                    self.parse_router_configs(routers_configs, config)
+                && let Ok(routers) = self.parse_router_configs(routers_configs)
             {
                 for router in routers {
                     // check if router exists
@@ -154,7 +146,6 @@ impl Topology {
     pub fn parse_router_configs(
         &self,
         routers_config: &Yaml,
-        config: &Config,
     ) -> Result<Vec<Router>> {
         let mut routers: Vec<Router> = vec![];
         if let Yaml::Hash(configs) = routers_config {
@@ -162,11 +153,9 @@ impl Topology {
                 if let Yaml::String(router_name) = router_name
                     && let Yaml::Hash(router_config) = router_config
                 {
-                    if let Ok(router) = Router::from_yaml_config(
-                        router_name,
-                        router_config,
-                        config,
-                    ) {
+                    if let Ok(router) =
+                        Router::from_yaml_config(router_name, router_config)
+                    {
                         routers.push(router);
                     }
                 } else {

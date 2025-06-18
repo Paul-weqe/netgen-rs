@@ -1,14 +1,12 @@
 #![feature(let_chains)]
-
 use std::fs::{File, OpenOptions};
-use std::io::BufRead;
-use std::process;
+use std::io::{BufRead, Write};
 
 use clap::{Arg, ArgMatches, command};
 use netgen::error::Error;
-use netgen::plugins::Config;
 use netgen::topology::Topology;
-use netgen::{DEVICES_NS_DIR, PLUGIN_PIDS_FILE, Result, mount_device};
+use netgen::{DEVICES_NS_DIR, NS_DIR, PID_FILE, Result, mount_device};
+use nix::mount::umount;
 use nix::sched::{CloneFlags, unshare};
 use nix::unistd::{ForkResult, Pid, fork, pause, setsid};
 use sysinfo::{Pid as SystemPid, System};
@@ -40,13 +38,12 @@ fn main() -> Result<()> {
                 runtime.block_on(async { parse_config_args(start_args) })?;
 
             // If the file exists, then the topology is currently running
-            if File::open(PLUGIN_PIDS_FILE).is_ok() {
+            if File::open(PID_FILE).is_ok() {
                 return Err(Error::GeneralError(String::from(
                     "topology is currently running. Consider running 'netgen stop -t my-topo.yml' before starting again",
                 )));
             }
 
-            File::create(PLUGIN_PIDS_FILE).unwrap();
             let fork = unsafe { fork() };
             match fork.expect("Failed to fork") {
                 ForkResult::Child => {
@@ -59,9 +56,12 @@ fn main() -> Result<()> {
                     setsid().expect("Failed to create a new session");
 
                     let pid = Pid::this();
+
                     let _ = mount_device(None, pid)?;
 
-                    println!("child PID: {:?}", process::id());
+                    if let Ok(mut f) = File::create(PID_FILE) {
+                        let _ = write!(f, "{}\n", pid.as_raw());
+                    }
 
                     // "powers on" all the devices and sets up all the
                     // required links.
@@ -75,18 +75,18 @@ fn main() -> Result<()> {
             }
         }
         Some(("stop", stop_args)) => {
-            runtime.block_on(async {
-                if let Ok(mut topology) = parse_config_args(stop_args) {
-                    topology.power_off();
-                }
-            });
-            // Turns off all the nodes
-            // as a result also deletes any dangling veth link
+            if let Ok(mut topology) = parse_config_args(stop_args) {
+                topology.power_off();
+            }
+
+            // Unmount the main task.
+            let main_mount_dir = format!("{NS_DIR}/main");
+            if let Err(err) = umount(main_mount_dir.as_str()) {
+                eprintln!("error umounting {main_mount_dir} {:?}", err);
+            }
 
             // Kills all the running plugin PIDs
-            if let Ok(file) =
-                OpenOptions::new().read(true).open(PLUGIN_PIDS_FILE)
-            {
+            if let Ok(file) = OpenOptions::new().read(true).open(PID_FILE) {
                 let reader = std::io::BufReader::new(file);
                 let system = System::new_all();
 
@@ -97,12 +97,13 @@ fn main() -> Result<()> {
                             system.process(SystemPid::from_u32(pid))
                     {
                         process.kill();
+                        println!("topology prunned");
                     }
                 }
             }
 
             // Delete the PID file.
-            let _ = std::fs::remove_file(PLUGIN_PIDS_FILE);
+            let _ = std::fs::remove_file(PID_FILE);
         }
         _ => {
             // Probably "help"
@@ -113,11 +114,6 @@ fn main() -> Result<()> {
 
 fn config_args() -> Vec<Arg> {
     vec![
-        Arg::new("Config File")
-            .short('c')
-            .long("config")
-            .value_name("yaml-file")
-            .help("the file with plugin configs"),
         Arg::new("Topo File")
             .short('t')
             .long("topo")
@@ -127,14 +123,6 @@ fn config_args() -> Vec<Arg> {
 }
 
 fn parse_config_args(config_args: &ArgMatches) -> Result<Topology> {
-    let config = match config_args.get_one::<String>("Config File") {
-        Some(config_file) => {
-            let mut config_file = File::open(config_file).unwrap();
-            Config::from_yaml_file(Some(&mut config_file))?
-        }
-        None => Config::from_yaml_file(None)?,
-    };
-
     let topo_file = match config_args.get_one::<String>("Topo File") {
         Some(topo_file) => topo_file,
         None => {
@@ -145,7 +133,6 @@ fn parse_config_args(config_args: &ArgMatches) -> Result<Topology> {
     };
 
     let mut topo_file = File::open(topo_file).unwrap();
-    let topology =
-        Topology::from_yaml_file(&mut topo_file, config.clone()).unwrap();
+    let topology = Topology::from_yaml_file(&mut topo_file).unwrap();
     Ok(topology)
 }

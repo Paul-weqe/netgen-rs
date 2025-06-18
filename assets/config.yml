@@ -1,8 +1,0 @@
-plugins:
-  holo:
-    daemon-dir: /usr/bin/holod-dir # the directory where the holo daemon can be found 
-    cli-dir: /usr/bin/holo-cli-dir # the directory where the holo-cli binary can be found.  
-
-  frr:
-    daemon-dir: /usr/bin/frr-dir # the directory where the FRR daemon can be found 
-    cli-dir: /usr/bin/frr-cli-dir # the directory where the FRR binary can be found.  
