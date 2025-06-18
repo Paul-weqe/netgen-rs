@@ -9,6 +9,7 @@ use nix::net::if_::if_nametoindex;
 use nix::sched::{CloneFlags, setns};
 use nix::unistd::Pid;
 use rtnetlink::{Handle, new_connection};
+use tokio::runtime::Runtime;
 use yaml_rust2::Yaml;
 use yaml_rust2::yaml::Hash;
 
@@ -92,10 +93,10 @@ pub(crate) enum Node {
 }
 
 impl Node {
-    pub fn power_on(&mut self) -> Result<()> {
+    pub fn power_on(&mut self, runtime: &Runtime) -> Result<()> {
         match self {
             Self::Router(router) => router.power_on(),
-            Self::Switch(switch) => switch.power_on(),
+            Self::Switch(switch) => switch.power_on(runtime),
         }
     }
 
@@ -174,15 +175,9 @@ impl Router {
     /// Creates a namespace representing the router
     /// and turns on the loopback interface.
     pub fn power_on(&mut self) -> Result<()> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            let file_path = mount_device(Some(self.name.clone()), Pid::this())?;
-            self.file_path = Some(file_path);
-            Ok::<(), Error>(())
-        })
+        let file_path = mount_device(Some(self.name.clone()), Pid::this())?;
+        self.file_path = Some(file_path);
+        Ok(())
     }
 
     /// Deletes the namespace created by the Router (if it exists)
@@ -287,13 +282,8 @@ impl Router {
     /// Above yaml config in topo file will add the address
     /// 10.0.1.2/24 to the eth-sw1 interface and 2.2.2.2/32
     /// to the lo address
-    pub fn add_iface_addresses(&self) -> Result<()> {
+    pub fn add_iface_addresses(&self, runtime: &Runtime) -> Result<()> {
         let interfaces = self.interfaces.clone();
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
 
         runtime.block_on(async {
             self.in_ns(move || async move {
@@ -367,13 +357,8 @@ impl Switch {
     }
 
     /// Initializes a network bridge representing the switch.
-    pub fn power_on(&mut self) -> Result<()> {
+    pub fn power_on(&mut self, runtime: &Runtime) -> Result<()> {
         let name = self.name.as_str();
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
 
         runtime.block_on(async {
             let (connection, handle, _) = new_connection().unwrap();

@@ -9,6 +9,7 @@ use rand::Rng;
 use rand::distributions::Alphanumeric;
 use rtnetlink::new_connection;
 use tokio;
+use tokio::runtime::Runtime;
 use yaml_rust2::YamlLoader;
 use yaml_rust2::yaml::Yaml;
 
@@ -244,13 +245,17 @@ impl Topology {
     /// For routers, this is creating a new namespace and making sure
     ///     the relevant interfaces are brought up.
     pub fn power_on(&mut self) -> Result<()> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         // powers on all the nodes
         for (_, node) in self.nodes.iter_mut() {
-            node.power_on()?;
+            node.power_on(&runtime)?;
         }
 
         // sets up all the links
-        self.setup_links()?;
+        self.setup_links(&runtime)?;
         Ok(())
     }
 
@@ -266,24 +271,28 @@ impl Topology {
         }
     }
 
-    pub fn setup_links(&mut self) -> Result<()> {
+    pub fn setup_links(&mut self, runtime: &Runtime) -> Result<()> {
         // create links
         for link in self.links.clone() {
-            self.create_link(&link)?;
+            self.create_link(&link, runtime)?;
         }
 
         // add addresss for links in
         // the router nodes
         for (_, node) in self.nodes.iter_mut() {
             if let Node::Router(router) = node {
-                let _ = &router.add_iface_addresses();
+                let _ = &router.add_iface_addresses(runtime);
             }
         }
         Ok(())
     }
 
     /// creates a link between two nodes.
-    pub fn create_link(&mut self, link: &Link) -> Result<()> {
+    pub fn create_link(
+        &mut self,
+        link: &Link,
+        runtime: &Runtime,
+    ) -> Result<()> {
         // generate random names for veth link
         // we do this to avoid conflict in the
         // parent device of interface names.
@@ -302,10 +311,6 @@ impl Topology {
             .map(char::from)
             .collect();
         let node2_link = format!("eth-{link_name}");
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
         runtime.block_on(async {
             let (connection, handle, _) = new_connection().unwrap();
             tokio::spawn(connection);
@@ -320,8 +325,18 @@ impl Topology {
             && let Some(dst_node) = self.nodes.get(&link.dst_name)
         {
             // attaches the links to their respective nodes
-            self.attach_link(src_node, node1_link, link.src_iface.clone())?;
-            self.attach_link(dst_node, node2_link, link.dst_iface.clone())?;
+            self.attach_link(
+                src_node,
+                node1_link,
+                link.src_iface.clone(),
+                runtime,
+            )?;
+            self.attach_link(
+                dst_node,
+                node2_link,
+                link.dst_iface.clone(),
+                runtime,
+            )?;
         }
 
         Ok(())
@@ -332,11 +347,8 @@ impl Topology {
         node: &Node,
         current_link_name: String,
         new_link_name: String,
+        runtime: &Runtime,
     ) -> Result<()> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
         runtime.block_on(async {
             let (connection, handle, _) = new_connection().unwrap();
             tokio::spawn(connection);

@@ -1,3 +1,5 @@
 /target
 run.sh
 .plugin-pids
+start.sh
+stop.sh
