@@ -380,8 +380,7 @@ impl Topology {
                                     handle.link().set(message).execute().await
                                 {
                                     eprintln!(
-                                        "error bringing {:?}::{:?} up -> {:?}",
-                                        nodename, current_link_name, err
+                                        "error bringing {nodename}::{current_link_name} up -> {err:?}",
                                     );
                                 }
                             })

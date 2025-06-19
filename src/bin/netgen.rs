@@ -60,7 +60,7 @@ fn main() -> Result<()> {
                     let _ = mount_device(None, pid)?;
 
                     if let Ok(mut f) = File::create(PID_FILE) {
-                        let _ = write!(f, "{}\n", pid.as_raw());
+                        let _ = writeln!(f, "{}\n", pid.as_raw());
                     }
 
                     // "powers on" all the devices and sets up all the
@@ -82,7 +82,7 @@ fn main() -> Result<()> {
             // Unmount the main task.
             let main_mount_dir = format!("{NS_DIR}/main");
             if let Err(err) = umount(main_mount_dir.as_str()) {
-                eprintln!("error umounting {main_mount_dir} {:?}", err);
+                eprintln!("error umounting {main_mount_dir} {err:?}");
             }
 
             // Kills all the running plugin PIDs

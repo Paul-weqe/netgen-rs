@@ -68,6 +68,7 @@ pub fn mount_device(device_name: Option<String>, pid: Pid) -> Result<String> {
             ))
         })?;
     } else {
+        eprintln!("unable to create file {:?}", ns_path.as_str());
     }
 
     Ok(ns_path)
