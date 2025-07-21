@@ -245,6 +245,7 @@ impl Router {
 
                 // Go back to the main namespace.
                 let main_namespace_path = format!("{NS_DIR}/main");
+
                 if let Ok(main_file) = File::open(main_namespace_path.as_str())
                     && let Ok(_) =
                         setns(main_file.as_fd(), CloneFlags::CLONE_NEWNET)
@@ -384,21 +385,20 @@ impl Switch {
 }
 
 // ==== Link ====
-
 #[derive(Debug, Clone)]
 pub struct Link {
-    pub src_name: String,
+    pub src_device: String,
     pub src_iface: String,
-    pub dst_name: String,
+    pub dst_device: String,
     pub dst_iface: String,
 }
 
 impl Link {
     pub fn src(&self) -> String {
-        format!("{}:{}", self.src_name, self.src_iface)
+        format!("{}:{}", self.src_device, self.src_iface)
     }
 
     pub fn dst(&self) -> String {
-        format!("{}:{}", self.dst_name, self.dst_iface)
+        format!("{}:{}", self.dst_device, self.dst_iface)
     }
 }

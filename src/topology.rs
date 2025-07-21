@@ -108,18 +108,18 @@ impl Topology {
             {
                 for link in links {
                     // check if link devices exist in config
-                    if !self.nodes.contains_key(&link.src_name) {
+                    if !self.nodes.contains_key(&link.src_device) {
                         let err = format!(
                             "src node name {} configured in {:?} does not exist",
-                            link.src_name, link
+                            link.src_device, link
                         );
                         let io_err = IoError::other(err.as_str());
                         return Err(Error::IoError(io_err));
                     }
-                    if !self.nodes.contains_key(&link.dst_name) {
+                    if !self.nodes.contains_key(&link.dst_device) {
                         let err = format!(
                             "dst node name {} configured in {:?} does not exist",
-                            link.dst_name, link
+                            link.dst_device, link
                         );
                         let io_err = IoError::other(err.as_str());
                         return Err(Error::IoError(io_err));
@@ -199,19 +199,19 @@ impl Topology {
         if let Yaml::Array(configs) = links_configs {
             for link_config in configs {
                 if let Yaml::Hash(link_config) = link_config {
-                    if let Some(Yaml::String(src)) =
-                        link_config.get(&Yaml::String(String::from("src")))
+                    if let Some(Yaml::String(src)) = link_config
+                        .get(&Yaml::String(String::from("src-device")))
                         && let Some(Yaml::String(src_iface)) = link_config
                             .get(&Yaml::String(String::from("src-iface")))
-                        && let Some(Yaml::String(dst)) =
-                            link_config.get(&Yaml::String(String::from("dst")))
+                        && let Some(Yaml::String(dst)) = link_config
+                            .get(&Yaml::String(String::from("dst-device")))
                         && let Some(Yaml::String(dst_iface)) = link_config
                             .get(&Yaml::String(String::from("dst-iface")))
                     {
                         let link = Link {
-                            src_name: src.to_string(),
+                            src_device: src.to_string(),
                             src_iface: src_iface.to_string(),
-                            dst_name: dst.to_string(),
+                            dst_device: dst.to_string(),
                             dst_iface: dst_iface.to_string(),
                         };
                         links.push(link);
@@ -318,8 +318,8 @@ impl Topology {
             //request.message_mut().header.flags.push(LinkFlag::Up);
             request.execute().await.unwrap();
         });
-        if let Some(src_node) = self.nodes.get(&link.src_name)
-            && let Some(dst_node) = self.nodes.get(&link.dst_name)
+        if let Some(src_node) = self.nodes.get(&link.src_device)
+            && let Some(dst_node) = self.nodes.get(&link.dst_device)
         {
             // attaches the links to their respective nodes
             self.attach_link(

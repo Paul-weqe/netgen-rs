@@ -3,10 +3,12 @@ pub mod devices;
 pub mod error;
 pub mod topology;
 
+use std::fs::File;
+use std::os::fd::AsFd;
 use std::path::Path;
 
 use nix::mount::{MsFlags, mount};
-use nix::sched::{CloneFlags, unshare};
+use nix::sched::{CloneFlags, setns, unshare};
 use nix::unistd::Pid;
 
 pub type Result<T> = std::result::Result<T, error::Error>;
@@ -71,5 +73,15 @@ pub fn mount_device(device_name: Option<String>, pid: Pid) -> Result<String> {
         eprintln!("unable to create file {:?}", ns_path.as_str());
     }
 
-    Ok(ns_path)
+    // Go back to main namespace
+    let main_ns_path = format!("{NS_DIR}/main");
+    if let Ok(main_file) = File::open(main_ns_path.as_str())
+        && let Ok(_) = setns(main_file.as_fd(), CloneFlags::CLONE_NEWNET)
+    {
+        Ok(ns_path)
+    } else {
+        Err(error::Error::GeneralError(
+            "unable to move back to main namespace".to_string(),
+        ))
+    }
 }

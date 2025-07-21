@@ -31,18 +31,18 @@ fn main() -> Result<()> {
 
     match app_match.subcommand() {
         Some(("start", start_args)) => {
-            // Create the directory storing our namespaces if it doesn't exists
-            let _ = std::fs::create_dir_all(DEVICES_NS_DIR);
-
-            let mut topology =
-                runtime.block_on(async { parse_config_args(start_args) })?;
-
-            // If the file exists, then the topology is currently running
+            // If the PID file exists, then there is a netgen instance already running.
             if File::open(PID_FILE).is_ok() {
                 return Err(Error::GeneralError(String::from(
                     "topology is currently running. Consider running 'netgen stop -t my-topo.yml' before starting again",
                 )));
             }
+
+            // Create the directory storing our namespaces if it doesn't exists
+            let _ = std::fs::create_dir_all(DEVICES_NS_DIR);
+
+            let mut topology =
+                runtime.block_on(async { parse_config_args(start_args) })?;
 
             let fork = unsafe { fork() };
             match fork.expect("Failed to fork") {

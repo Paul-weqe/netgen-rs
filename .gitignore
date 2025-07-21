@@ -3,3 +3,5 @@ run.sh
 .plugin-pids
 start.sh
 stop.sh
+join.sh
+.swp
