@@ -52,28 +52,7 @@ pub fn mount_device(device_name: Option<String>, pid: Pid) -> Result<String> {
         }
     }
 
-    if std::fs::File::create(ns_path.as_str()).is_ok() {
-        let _ = unshare(CloneFlags::CLONE_NEWNET);
-        let proc_ns_path = format!("/proc/{}/ns/net", pid.as_raw());
-        let target_path = Path::new(&ns_path);
-
-        mount(
-            Some(proc_ns_path.as_str()),
-            target_path.as_os_str(),
-            None::<&str>,
-            MsFlags::MS_BIND,
-            None::<&str>,
-        )
-        .map_err(|err| {
-            error::Error::GeneralError(format!(
-                "unable to mount PID {ns_path} on {proc_ns_path} -> {err:?}",
-            ))
-        })?;
-    } else {
-        eprintln!("unable to create file {:?}", ns_path.as_str());
-    }
-
-    // Go back to main namespace
+    //Go back to main namespace
     let main_ns_path = format!("{NS_DIR}/main");
     if let Ok(main_file) = File::open(main_ns_path.as_str())
         && let Ok(_) = setns(main_file.as_fd(), CloneFlags::CLONE_NEWNET)

@@ -373,6 +373,10 @@ impl Switch {
                 ))
             })?;
 
+            if let Ok(ifindex) = if_nametoindex(name) {
+                self.ifindex = Some(ifindex as u32);
+            }
+
             Ok(())
         })
     }
