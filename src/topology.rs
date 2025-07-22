@@ -9,6 +9,7 @@ use rand::distributions::Alphanumeric;
 use rtnetlink::{LinkUnspec, LinkVeth, new_connection};
 use tokio;
 use tokio::runtime::Runtime;
+use tracing::{debug, debug_span, error};
 use yaml_rust2::YamlLoader;
 use yaml_rust2::yaml::Yaml;
 
@@ -243,6 +244,8 @@ impl Topology {
     /// For routers, this is creating a new namespace and making sure
     ///     the relevant interfaces are brought up.
     pub fn power_on(&mut self) -> Result<()> {
+        let power_on_span = debug_span!("net-init");
+        let _span_guard = power_on_span.enter();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -263,6 +266,8 @@ impl Topology {
     ///
     /// For routers, this is deleting the respective namespaces
     pub fn power_off(&mut self) {
+        let power_off_span = debug_span!("net-stop");
+        let _span_guard = power_off_span.enter();
         // Powers off all the nodes
         for (_, node) in self.nodes.iter_mut() {
             node.power_off();
@@ -291,6 +296,11 @@ impl Topology {
         link: &Link,
         runtime: &Runtime,
     ) -> Result<()> {
+        let src_iface = format!("{}:{}", link.src_device, link.src_iface);
+        let dst_iface = format!("{}:{}", link.dst_device, link.dst_iface);
+        let link_span = debug_span!("link-setup", %src_iface, %dst_iface);
+        let _span_guard = link_span.enter();
+        debug!("setting up");
         // generate random names for veth link
         // we do this to avoid conflict in the
         // parent device of interface names.
@@ -335,6 +345,7 @@ impl Topology {
                 runtime,
             )?;
         }
+        debug!("setup complete");
 
         Ok(())
     }
@@ -361,7 +372,6 @@ impl Topology {
                             .build();
                         // move router device to said namespace
                         handle.link().set(message).execute().await.unwrap();
-                        let nodename = router.name.clone();
 
                         // rename the interface to it's proper name
                         router
@@ -379,9 +389,7 @@ impl Topology {
                                 if let Err(err) =
                                     handle.link().set(message).execute().await
                                 {
-                                    eprintln!(
-                                        "error bringing {nodename}::{current_link_name} up -> {err:?}",
-                                    );
+                                    error!(error = %err, "error coming up");
                                 }
                             })
                             .await
@@ -400,10 +408,7 @@ impl Topology {
                         if let Err(err) =
                             handle.link().set(message).execute().await
                         {
-                            eprintln!(
-                                "error changing {}::{} name -> {:?}",
-                                switch.name, current_link_name, err
-                            );
+                            error!(error = %err, "error changing name");
                         }
 
                         let message = LinkUnspec::new_with_index(index)
@@ -412,10 +417,7 @@ impl Topology {
                         if let Err(err) =
                             handle.link().set(message).execute().await
                         {
-                            eprintln!(
-                                "error changing {}::{} controller -> {:?}",
-                                switch.name, current_link_name, err
-                            );
+                            error!(error = %err, "error changing controller");
                         }
                     }
                 }

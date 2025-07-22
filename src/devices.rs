@@ -9,6 +9,7 @@ use nix::sched::{CloneFlags, setns};
 use nix::unistd::Pid;
 use rtnetlink::{Handle, LinkBridge, new_connection};
 use tokio::runtime::Runtime;
+use tracing::{debug, error};
 use yaml_rust2::Yaml;
 use yaml_rust2::yaml::Hash;
 
@@ -176,6 +177,7 @@ impl Router {
     pub fn power_on(&mut self) -> Result<()> {
         let file_path = mount_device(Some(self.name.clone()), Pid::this())?;
         self.file_path = Some(file_path);
+        debug!(router=%self.name, "powered on");
         Ok(())
     }
 
@@ -185,14 +187,14 @@ impl Router {
         let ns_path = format!("{DEVICES_NS_DIR}/{}", self.name);
 
         if let Err(err) = umount(ns_path.as_str()) {
-            eprintln!("error unmounting namespace {} {:?}", self.name, err);
+            error!(router = %self.name, error = %err,"issue unmounting namespace");
         }
 
         // Remove the files.
         if let Err(err) = std::fs::remove_file(ns_path.as_str()) {
-            eprintln!("error removing namespace file {}: {:?}", self.name, err);
+            error!(router = %self.name, error = %err,"issue removing namespace file");
         } else {
-            println!("deleted {}", self.name);
+            debug!(router = %self.name, "deleted");
         }
     }
 
@@ -375,6 +377,7 @@ impl Switch {
 
             if let Ok(ifindex) = if_nametoindex(name) {
                 self.ifindex = Some(ifindex as u32);
+                debug!(switch = %self.name, "powered on");
             }
 
             Ok(())
@@ -383,7 +386,6 @@ impl Switch {
 
     /// Switch does not run in dedicated namespace thus no need to unmount.
     pub fn power_off(&mut self) {
-        println!("deleted {}", self.name);
         // Powering off...I guess.
     }
 }

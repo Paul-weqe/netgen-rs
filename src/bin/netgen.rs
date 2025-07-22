@@ -10,8 +10,13 @@ use nix::mount::umount;
 use nix::sched::{CloneFlags, unshare};
 use nix::unistd::{ForkResult, Pid, fork, pause, setsid};
 use sysinfo::{Pid as SystemPid, System};
+use tracing::{Level, debug, error};
+use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::registry::Registry;
 
 fn main() -> Result<()> {
+    init_tracing();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -82,7 +87,7 @@ fn main() -> Result<()> {
             // Unmount the main task.
             let main_mount_dir = format!("{NS_DIR}/main");
             if let Err(err) = umount(main_mount_dir.as_str()) {
-                eprintln!("error umounting {main_mount_dir} {err:?}");
+                error!(%main_mount_dir, error = %err, "error umounting");
             }
 
             // Kills all the running plugin PIDs
@@ -97,7 +102,7 @@ fn main() -> Result<()> {
                             system.process(SystemPid::from_u32(pid))
                     {
                         process.kill();
-                        println!("topology prunned");
+                        debug!("network shutdown complete");
                     }
                 }
             }
@@ -110,6 +115,16 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn init_tracing() {
+    let level_filter = LevelFilter::from_level(Level::TRACE);
+    let layer = tracing_subscriber::fmt::layer().with_target(false);
+    let layer = layer.with_filter(level_filter);
+    let subscriber = Registry::default().with(layer);
+    let _ = tracing::subscriber::set_global_default(subscriber).map_err(|_| {
+        eprintln!("unable to initialize tracing");
+    });
 }
 
 fn config_args() -> Vec<Arg> {
