@@ -1,0 +1,45 @@
+routers:
+  RT-A:
+    interfaces:
+      eth0:
+        ipv4:
+        - 192.168.0.1/24
+      eth1:
+        ipv4:
+        - 192.168.1.1/24
+
+  RT-B:
+    interfaces:
+      eth0:
+        ipv4:
+        - 192.168.0.2/24
+
+      eth1:
+        ipv4:
+        - 192.168.2.1/24
+
+  RT-C:
+    interfaces:
+      eth0:
+        ipv4:
+        - 192.168.1.2/24
+
+      eth1:
+        ipv4:
+        - 192.168.2.2/24
+
+links:
+  - src-device: RT-A
+    src-iface: eth0
+    dst-device: RT-B 
+    dst-iface: eth0
+
+  - src-device: RT-A 
+    src-iface: eth1
+    dst-device: RT-C
+    dst-iface: eth0
+
+  - src-device: RT-B 
+    src-iface: eth1
+    dst-device: RT-C
+    dst-iface: eth1

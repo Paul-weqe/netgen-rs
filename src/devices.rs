@@ -184,7 +184,7 @@ impl Router {
     /// Deletes the namespace created by the Router (if it exists)
     pub fn power_off(&mut self) {
         // create the file that will be hooked to the router's namespace.
-        let ns_path = format!("{DEVICES_NS_DIR}/{}", self.name);
+        let ns_path = format!("{DEVICES_NS_DIR}/{}/net", self.name);
 
         if let Err(err) = umount(ns_path.as_str()) {
             error!(router = %self.name, error = %err,"issue unmounting namespace");
@@ -246,7 +246,7 @@ impl Router {
                 let result = (f)().await;
 
                 // Go back to the main namespace.
-                let main_namespace_path = format!("{NS_DIR}/main");
+                let main_namespace_path = format!("{NS_DIR}/main/net");
 
                 if let Ok(main_file) = File::open(main_namespace_path.as_str())
                     && let Ok(_) =

@@ -1,4 +1,3 @@
-#![feature(let_chains)]
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, Write};
 
@@ -85,7 +84,8 @@ fn main() -> Result<()> {
             }
 
             // Unmount the main task.
-            let main_mount_dir = format!("{NS_DIR}/main");
+            let main_mount_dir = format!("{NS_DIR}/main/net");
+
             if let Err(err) = umount(main_mount_dir.as_str()) {
                 error!(%main_mount_dir, error = %err, "error umounting");
             }
