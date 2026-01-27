@@ -6,7 +6,6 @@ use netgen::error::Error;
 use netgen::topology::Topology;
 use netgen::{DEVICES_NS_DIR, NS_DIR, PID_FILE, Result, mount_device};
 use nix::mount::umount;
-use nix::sched::{CloneFlags, unshare};
 use nix::unistd::{ForkResult, Pid, fork, pause, setsid};
 use sysinfo::{Pid as SystemPid, System};
 use tracing::{Level, debug, error};
@@ -51,12 +50,6 @@ fn main() -> Result<()> {
             let fork = unsafe { fork() };
             match fork.expect("Failed to fork") {
                 ForkResult::Child => {
-                    unshare(
-                        CloneFlags::CLONE_NEWNET
-                            | CloneFlags::CLONE_NEWPID
-                            | CloneFlags::CLONE_NEWNS,
-                    )
-                    .expect("Need to be superuser");
                     setsid().expect("Failed to create a new session");
 
                     let pid = Pid::this();
@@ -64,7 +57,7 @@ fn main() -> Result<()> {
                     let _ = mount_device(None, pid)?;
 
                     if let Ok(mut f) = File::create(PID_FILE) {
-                        let _ = writeln!(f, "{}\n", pid.as_raw());
+                        let _ = writeln!(f, "{}", pid.as_raw());
                     }
 
                     // "powers on" all the devices and sets up all the

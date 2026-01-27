@@ -172,8 +172,8 @@ impl Router {
         Ok(router)
     }
 
-    /// Creates a namespace representing the router
-    /// and turns on the loopback interface.
+    /// Creates a namespace representing the router and turns on the
+    /// loopback interface.
     pub fn power_on(&mut self) -> Result<()> {
         let file_path = mount_device(Some(self.name.clone()), Pid::this())?;
         self.file_path = Some(file_path);
