@@ -1,13 +1,15 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, Write};
+use std::os::fd::AsFd;
 
 use clap::{Arg, ArgMatches, command};
 use netgen::error::Error;
 use netgen::topology::Topology;
 use netgen::{DEVICES_NS_DIR, NS_DIR, PID_FILE, Result, mount_device};
 use nix::mount::umount;
+use nix::sched::{CloneFlags, setns};
 use nix::sys::wait::waitpid;
-use nix::unistd::{ForkResult, Pid, fork, setsid};
+use nix::unistd::{ForkResult, Pid, fork};
 use sysinfo::{Pid as SystemPid, System};
 use tracing::{Level, debug, error};
 use tracing_subscriber::filter::LevelFilter;
@@ -47,37 +49,13 @@ fn main() -> Result<()> {
 
             let mut topology =
                 runtime.block_on(async { parse_config_args(start_args) })?;
+            create_devices(&mut topology)?;
 
-            let fork = unsafe { fork() };
-            match fork {
-                Ok(ForkResult::Child) => {
-                    setsid().expect("Failed to create a new session");
+            // For for setting links up for the devices.
+            // FIXME: we do this in a different fork since the creation of devices and links in one
+            // fork often led to putting up the interfaces in the wrong nsmaespace.
 
-                    let pid = Pid::this();
-                    let _ = mount_device(None, pid)?;
-
-                    if let Ok(mut f) = File::create(PID_FILE) {
-                        let _ = writeln!(f, "{}", pid.as_raw());
-                    }
-
-                    // "powers on" all the devices and sets up all the
-                    // required links.
-                    topology.power_on()?;
-                    debug!("topology successfully started");
-                }
-                Ok(ForkResult::Parent { child }) => {
-                    waitpid(child, None).map_err(|err| {
-                        Error::GeneralError(format!(
-                            "problem while waitinf for initial fork -> {err:?}"
-                        ))
-                    })?;
-                }
-                Err(err) => {
-                    return Err(Error::GeneralError(format!(
-                        "unable to create initial fork -> {err:?}"
-                    )));
-                }
-            }
+            add_device_links(&topology)?;
         }
         Some(("stop", stop_args)) => {
             if let Ok(mut topology) = parse_config_args(stop_args) {
@@ -113,6 +91,77 @@ fn main() -> Result<()> {
         }
         _ => {
             // Probably "help"
+        }
+    }
+    Ok(())
+}
+
+// Powers on all the devices in the topology.
+fn create_devices(topology: &mut Topology) -> Result<()> {
+    let fork = unsafe { fork() };
+
+    // Fork for creating the devices.
+    match fork {
+        Ok(ForkResult::Child) => {
+            let pid = Pid::this();
+            let _ = mount_device(None, pid)?;
+
+            if let Ok(mut f) = File::create(PID_FILE) {
+                let _ = writeln!(f, "{}", pid.as_raw());
+            }
+
+            // "powers on" all the devices and sets up all the
+            // required links.
+            topology.power_on()?;
+            debug!("devices powered on");
+        }
+        Ok(ForkResult::Parent { child }) => {
+            waitpid(child, None).map_err(|err| {
+                Error::GeneralError(format!(
+                    "problem while waiting for create_device fork -> {err:?}"
+                ))
+            })?;
+        }
+        Err(err) => {
+            return Err(Error::GeneralError(format!(
+                "problem intiializing create_device fork -> {err:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+// Adds links to all the devices that have been created.
+fn add_device_links(topology: &Topology) -> Result<()> {
+    let fork = unsafe { fork() };
+
+    match fork {
+        Ok(ForkResult::Child) => {
+            // Enter the main namespace.
+            let main_net_path = format!("/tmp/netgen-rs/ns/main/net");
+            let main_net_file = File::open(main_net_path.as_str()).expect(
+                format!("unable to open file {main_net_path}").as_str(),
+            );
+
+            setns(main_net_file.as_fd(), CloneFlags::CLONE_NEWNET)
+                .map_err(|err| {
+                    Error::GeneralError(format!(
+                        "problem moving into main namespace in add_device_links -> {err:?}"
+                    ))
+                })?;
+            topology.setup_links()?;
+        }
+        Ok(ForkResult::Parent { child }) => {
+            waitpid(child, None).map_err(|err| {
+                Error::GeneralError(format!(
+                    "problem while waiting for add_device_links fork -> {err:?}"
+                ))
+            })?;
+        }
+        Err(err) => {
+            return Err(Error::GeneralError(format!(
+                "problem initializing add_device_links fork -> {err:?}"
+            )));
         }
     }
     Ok(())
