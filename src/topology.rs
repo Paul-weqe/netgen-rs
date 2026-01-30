@@ -23,6 +23,7 @@ pub struct Topology {
     // Node holds the node object.
     nodes: BTreeMap<String, Node>,
     links: Vec<Link>,
+    runtime: Runtime,
 }
 
 impl Topology {
@@ -30,6 +31,10 @@ impl Topology {
         Self {
             nodes: BTreeMap::new(),
             links: vec![],
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
         }
     }
 
@@ -40,11 +45,7 @@ impl Topology {
     }
 
     pub fn from_yaml_str(yaml_str: &str) -> Result<Self> {
-        let mut topology = Self {
-            nodes: BTreeMap::new(),
-            links: vec![],
-        };
-
+        let mut topology = Self::new();
         let yaml_content =
             YamlLoader::load_from_str(yaml_str).map_err(Error::ScanError)?;
         for yaml_group in yaml_content {
@@ -246,18 +247,15 @@ impl Topology {
     pub fn power_on(&mut self) -> Result<()> {
         let power_on_span = debug_span!("net-init");
         let _span_guard = power_on_span.enter();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
 
         // powers on all the nodes
         for (_, node) in self.nodes.iter_mut() {
-            node.power_on(&runtime)?;
+            //node.power_on(&runtime)?;
+            node.power_on(&self.runtime)?;
         }
 
         // sets up all the links
-        self.setup_links(&runtime)?;
+        self.setup_links()?;
         Ok(())
     }
 
@@ -275,32 +273,30 @@ impl Topology {
         }
     }
 
-    pub fn setup_links(&mut self, runtime: &Runtime) -> Result<()> {
-        // create links
-        for link in self.links.clone() {
-            self.create_link(&link, runtime)?;
+    pub fn setup_links(&self) -> Result<()> {
+        // create links.
+        for link in &self.links {
+            self.create_link(&link)?;
         }
 
         // Add addresss for links in the router nodes.
-        for (_, node) in self.nodes.iter_mut() {
+        for (_, node) in self.nodes.iter() {
             if let Node::Router(router) = node {
-                let _ = &router.add_iface_addresses(runtime);
+                let _ = router.add_iface_addresses(&self.runtime);
             }
         }
         Ok(())
     }
 
     /// creates a link between two nodes.
-    pub fn create_link(
-        &mut self,
-        link: &Link,
-        runtime: &Runtime,
-    ) -> Result<()> {
+    pub fn create_link(&self, link: &Link) -> Result<()> {
+        let runtime = &self.runtime;
         let src_iface = format!("{}:{}", link.src_device, link.src_iface);
         let dst_iface = format!("{}:{}", link.dst_device, link.dst_iface);
         let link_span = debug_span!("link-setup", %src_iface, %dst_iface);
         let _span_guard = link_span.enter();
         debug!("setting up");
+
         // generate random names for veth link
         // we do this to avoid conflict in the
         // parent device of interface names.
@@ -332,18 +328,8 @@ impl Topology {
             && let Some(dst_node) = self.nodes.get(&link.dst_device)
         {
             // attaches the links to their respective nodes
-            self.attach_link(
-                src_node,
-                node1_link,
-                link.src_iface.clone(),
-                runtime,
-            )?;
-            self.attach_link(
-                dst_node,
-                node2_link,
-                link.dst_iface.clone(),
-                runtime,
-            )?;
+            self.attach_link(src_node, node1_link, link.src_iface.clone())?;
+            self.attach_link(dst_node, node2_link, link.dst_iface.clone())?;
         }
         debug!("setup complete");
 
@@ -355,8 +341,8 @@ impl Topology {
         node: &Node,
         current_link_name: String,
         new_link_name: String,
-        runtime: &Runtime,
     ) -> Result<()> {
+        let runtime = &self.runtime;
         runtime.block_on(async {
             let (connection, handle, _) = new_connection().unwrap();
             tokio::spawn(connection);
