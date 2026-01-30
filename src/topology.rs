@@ -250,6 +250,7 @@ impl Topology {
             .enable_all()
             .build()
             .unwrap();
+
         // powers on all the nodes
         for (_, node) in self.nodes.iter_mut() {
             node.power_on(&runtime)?;
@@ -280,8 +281,7 @@ impl Topology {
             self.create_link(&link, runtime)?;
         }
 
-        // add addresss for links in
-        // the router nodes
+        // Add addresss for links in the router nodes.
         for (_, node) in self.nodes.iter_mut() {
             if let Node::Router(router) = node {
                 let _ = &router.add_iface_addresses(runtime);

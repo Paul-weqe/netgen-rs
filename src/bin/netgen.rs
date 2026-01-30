@@ -6,7 +6,8 @@ use netgen::error::Error;
 use netgen::topology::Topology;
 use netgen::{DEVICES_NS_DIR, NS_DIR, PID_FILE, Result, mount_device};
 use nix::mount::umount;
-use nix::unistd::{ForkResult, Pid, fork, pause, setsid};
+use nix::sys::wait::waitpid;
+use nix::unistd::{ForkResult, Pid, fork, setsid};
 use sysinfo::{Pid as SystemPid, System};
 use tracing::{Level, debug, error};
 use tracing_subscriber::filter::LevelFilter;
@@ -48,12 +49,11 @@ fn main() -> Result<()> {
                 runtime.block_on(async { parse_config_args(start_args) })?;
 
             let fork = unsafe { fork() };
-            match fork.expect("Failed to fork") {
-                ForkResult::Child => {
+            match fork {
+                Ok(ForkResult::Child) => {
                     setsid().expect("Failed to create a new session");
 
                     let pid = Pid::this();
-
                     let _ = mount_device(None, pid)?;
 
                     if let Ok(mut f) = File::create(PID_FILE) {
@@ -63,11 +63,19 @@ fn main() -> Result<()> {
                     // "powers on" all the devices and sets up all the
                     // required links.
                     topology.power_on()?;
-
-                    pause();
+                    debug!("topology successfully started");
                 }
-                _ => {
-                    //
+                Ok(ForkResult::Parent { child }) => {
+                    waitpid(child, None).map_err(|err| {
+                        Error::GeneralError(format!(
+                            "problem while waitinf for initial fork -> {err:?}"
+                        ))
+                    })?;
+                }
+                Err(err) => {
+                    return Err(Error::GeneralError(format!(
+                        "unable to create initial fork -> {err:?}"
+                    )));
                 }
             }
         }
