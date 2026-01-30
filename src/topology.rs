@@ -49,8 +49,11 @@ impl Topology {
         let yaml_content =
             YamlLoader::load_from_str(yaml_str).map_err(Error::ScanError)?;
         for yaml_group in yaml_content {
-            // TODO: handle the unwrap() below
-            topology.parse_topology_config(&yaml_group).unwrap();
+            topology.parse_topology_config(&yaml_group).map_err(|err| {
+                Error::GeneralError(format!(
+                    "error parsing config file -> {err:?}"
+                ))
+            })?;
         }
         Ok(topology)
     }
@@ -250,6 +253,7 @@ impl Topology {
                 switch.power_on(&self.runtime)?;
             }
         }
+
         Ok(())
     }
 
@@ -284,7 +288,15 @@ impl Topology {
     }
 
     pub fn setup_links(&self) -> Result<()> {
-        // create links.
+        // Make sure the loopback interfaces in all the routers in in "up" state.
+        // This is not the default when creating these namespaces.
+        for (_, node) in self.nodes.iter() {
+            if let Node::Router(router) = node {
+                router.iface_up(1, &self.runtime)?;
+            }
+        }
+
+        // create links on routers.
         for link in &self.links {
             self.create_link(&link)?;
         }

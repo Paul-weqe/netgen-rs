@@ -7,7 +7,7 @@ use nix::mount::umount;
 use nix::net::if_::if_nametoindex;
 use nix::sched::{CloneFlags, setns};
 use nix::unistd::Pid;
-use rtnetlink::{Handle, LinkBridge, new_connection};
+use rtnetlink::{Handle, LinkBridge, LinkUnspec, new_connection};
 use tokio::runtime::Runtime;
 use tracing::{debug, error};
 use yaml_rust2::Yaml;
@@ -93,13 +93,6 @@ pub(crate) enum Node {
 }
 
 impl Node {
-    pub fn power_on(&mut self, runtime: &Runtime) -> Result<()> {
-        match self {
-            Self::Router(router) => router.power_on(),
-            Self::Switch(switch) => switch.power_on(runtime),
-        }
-    }
-
     pub fn power_off(&mut self) {
         match self {
             Self::Router(router) => router.power_off(),
@@ -178,6 +171,35 @@ impl Router {
         let file_path = mount_device(Some(self.name.clone()), Pid::this())?;
         self.file_path = Some(file_path);
         debug!(router=%self.name, "powered on");
+        Ok(())
+    }
+
+    /// Change interface state to up.
+    pub fn iface_up(&self, ifindex: u32, runtime: &Runtime) -> Result<()> {
+        let router_name = self.name.clone();
+        runtime.block_on(async {
+            self.in_ns(move || async move {
+                let (connection, handle, _) = new_connection().unwrap();
+                tokio::spawn(connection);
+
+                let message = LinkUnspec::new_with_index(ifindex).up().build();
+
+                handle
+                    .link()
+                    .set(message)
+                    .execute()
+                    .await
+                    .map_err(|err| {
+                        error!(router=%router_name, ifindex=%ifindex,
+                            "problem bringing up"
+                        );
+                        Error::GeneralError(format!("{err:?}"))
+                    })
+                    .unwrap();
+            })
+            .await
+            .unwrap();
+        });
         Ok(())
     }
 
