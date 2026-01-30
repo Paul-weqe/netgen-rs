@@ -21,7 +21,7 @@ pub const PID_FILE: &str = "/tmp/netgen-rs/ns/.pid";
 // If we are trying to mount the main pid, we leave device_name as None
 pub fn mount_device(device_name: Option<String>, pid: Pid) -> Result<String> {
     let device = DeviceDetails::new(device_name);
-    unshare(CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWNS).unwrap();
+    unshare(CloneFlags::CLONE_NEWNET).unwrap();
 
     match unsafe { fork() } {
         Ok(ForkResult::Child) => {
@@ -36,10 +36,10 @@ pub fn mount_device(device_name: Option<String>, pid: Pid) -> Result<String> {
     }
 
     let main_net_path = format!("/proc/{}/ns/net", pid.as_raw());
-    let main_file = File::open(main_net_path.as_str())
+    let main_net_file = File::open(main_net_path.as_str())
         .expect(format!("unable to open file {:?}", main_net_path).as_str());
 
-    setns(main_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(|err| {
+    setns(main_net_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(|err| {
         error::Error::GeneralError(format!(
             "unable to move back to main namespace -> {err:?}"
         ))

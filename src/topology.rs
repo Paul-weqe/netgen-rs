@@ -237,25 +237,35 @@ impl Topology {
         false
     }
 
-    /// "Powers on" all the devices in the network.
+    /// We power on the switches.
     ///
-    /// For switches, this is reating a bridged interface
-    ///     and making sure it's administrative state is "up"
-    ///
-    /// For routers, this is creating a new namespace and making sure
-    ///     the relevant interfaces are brought up.
-    pub fn power_on(&mut self) -> Result<()> {
-        let power_on_span = debug_span!("net-init");
+    /// This is by creating a bridged device and making sure its administrative
+    ///     state is "up".This is done in the main namespace.
+    pub fn power_switches_on(&mut self) -> Result<()> {
+        let power_on_span = debug_span!("switch-power-on");
         let _span_guard = power_on_span.enter();
 
-        // powers on all the nodes
         for (_, node) in self.nodes.iter_mut() {
-            //node.power_on(&runtime)?;
-            node.power_on(&self.runtime)?;
+            if let Node::Switch(switch) = node {
+                switch.power_on(&self.runtime)?;
+            }
         }
+        Ok(())
+    }
 
-        // sets up all the links
-        self.setup_links()?;
+    /// Powers on Routers.
+    ///
+    /// This is done by creating a new namespace. The adding of the relevant
+    ///     interfaces is done elsewhere .
+    pub fn power_routers_on(&mut self) -> Result<()> {
+        let power_on_span = debug_span!("router-power-on");
+        let _span_guard = power_on_span.enter();
+
+        for (_, node) in self.nodes.iter_mut() {
+            if let Node::Router(router) = node {
+                router.power_on()?;
+            }
+        }
         Ok(())
     }
 

@@ -44,18 +44,22 @@ fn main() -> Result<()> {
                 )));
             }
 
+            let pid = Pid::this();
+
             // Create the directory storing our namespaces if it doesn't exists
             let _ = std::fs::create_dir_all(DEVICES_NS_DIR);
-
             let mut topology =
                 runtime.block_on(async { parse_config_args(start_args) })?;
-            create_devices(&mut topology)?;
 
-            // For for setting links up for the devices.
-            // FIXME: we do this in a different fork since the creation of devices and links in one
-            // fork often led to putting up the interfaces in the wrong nsmaespace.
+            create_routers(&mut topology)?;
 
-            add_device_links(&topology)?;
+            // Check if this is the child process.
+            if Pid::this() == pid {
+                return Ok(());
+            }
+
+            // For for setting vEth and bridges up for the devices.
+            add_switches_and_links(&mut topology)?;
         }
         Some(("stop", stop_args)) => {
             if let Ok(mut topology) = parse_config_args(stop_args) {
@@ -97,7 +101,7 @@ fn main() -> Result<()> {
 }
 
 // Powers on all the devices in the topology.
-fn create_devices(topology: &mut Topology) -> Result<()> {
+fn create_routers(topology: &mut Topology) -> Result<()> {
     let fork = unsafe { fork() };
 
     // Fork for creating the devices.
@@ -110,21 +114,20 @@ fn create_devices(topology: &mut Topology) -> Result<()> {
                 let _ = writeln!(f, "{}", pid.as_raw());
             }
 
-            // "powers on" all the devices and sets up all the
-            // required links.
-            topology.power_on()?;
+            // Creates required namespaces for the routing devices.
+            topology.power_routers_on()?;
             debug!("devices powered on");
         }
         Ok(ForkResult::Parent { child }) => {
             waitpid(child, None).map_err(|err| {
                 Error::GeneralError(format!(
-                    "problem while waiting for create_device fork -> {err:?}"
+                    "problem while waiting for create_routers fork -> {err:?}"
                 ))
             })?;
         }
         Err(err) => {
             return Err(Error::GeneralError(format!(
-                "problem intiializing create_device fork -> {err:?}"
+                "problem intiializing create_routers fork -> {err:?}"
             )));
         }
     }
@@ -132,16 +135,19 @@ fn create_devices(topology: &mut Topology) -> Result<()> {
 }
 
 // Adds links to all the devices that have been created.
-fn add_device_links(topology: &Topology) -> Result<()> {
+fn add_switches_and_links(topology: &mut Topology) -> Result<()> {
     let fork = unsafe { fork() };
 
     match fork {
         Ok(ForkResult::Child) => {
             // Enter the main namespace.
             let main_net_path = format!("/tmp/netgen-rs/ns/main/net");
-            let main_net_file = File::open(main_net_path.as_str()).expect(
-                format!("unable to open file {main_net_path}").as_str(),
-            );
+            let main_net_file =
+                File::open(main_net_path.as_str()).map_err(|err| {
+                    Error::GeneralError(format!(
+                        "error opening main {main_net_path} -> {err:?}"
+                    ))
+                })?;
 
             setns(main_net_file.as_fd(), CloneFlags::CLONE_NEWNET)
                 .map_err(|err| {
@@ -149,6 +155,7 @@ fn add_device_links(topology: &Topology) -> Result<()> {
                         "problem moving into main namespace in add_device_links -> {err:?}"
                     ))
                 })?;
+            topology.power_switches_on()?;
             topology.setup_links()?;
         }
         Ok(ForkResult::Parent { child }) => {
