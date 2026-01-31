@@ -14,7 +14,7 @@ use yaml_rust2::Yaml;
 use yaml_rust2::yaml::Hash;
 
 use crate::error::Error;
-use crate::{DEVICES_NS_DIR, NS_DIR, Result, mount_device};
+use crate::{DEVICES_NS_DIR, NS_DIR, Result, kill_process, mount_device};
 
 // ==== Interface ====
 #[derive(Debug, Clone)]
@@ -205,16 +205,20 @@ impl Router {
 
     /// Deletes the namespace created by the Router (if it exists)
     pub fn power_off(&mut self) {
-        // create the file that will be hooked to the router's namespace.
-        let ns_path = format!("{DEVICES_NS_DIR}/{}/net", self.name);
+        let device_dir = format!("{DEVICES_NS_DIR}/{}", self.name);
+        kill_process(format!("{device_dir}/.pid").as_str()).unwrap();
 
+        // create the file that will be hooked to the router's namespace.
+        let ns_path = format!("{device_dir}/net");
         if let Err(err) = umount(ns_path.as_str()) {
             error!(router = %self.name, error = %err,"issue unmounting namespace");
+            return;
         }
 
         // Remove the files.
-        if let Err(err) = std::fs::remove_file(ns_path.as_str()) {
-            error!(router = %self.name, error = %err,"issue removing namespace file");
+        if let Err(err) = std::fs::remove_dir_all(device_dir.as_str()) {
+            error!(router = %self.name, error = %err, dir=%device_dir,
+                "problem removing directory");
         } else {
             debug!(router = %self.name, "deleted");
         }

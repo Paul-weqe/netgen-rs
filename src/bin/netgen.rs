@@ -1,16 +1,17 @@
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, Write};
+use std::fs::File;
+use std::io::Write;
 use std::os::fd::AsFd;
 
 use clap::{Arg, ArgMatches, command};
 use netgen::error::Error;
 use netgen::topology::Topology;
-use netgen::{DEVICES_NS_DIR, NS_DIR, PID_FILE, Result, mount_device};
+use netgen::{
+    DEVICES_NS_DIR, NS_DIR, PID_FILE, Result, kill_process, mount_device,
+};
 use nix::mount::umount;
 use nix::sched::{CloneFlags, setns};
 use nix::sys::wait::waitpid;
 use nix::unistd::{ForkResult, Pid, fork};
-use sysinfo::{Pid as SystemPid, System};
 use tracing::{Level, debug, error};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::*;
@@ -66,28 +67,14 @@ fn main() -> Result<()> {
                 topology.power_off();
             }
 
+            // Kill the main process.
+            kill_process(PID_FILE)?;
+
             // Unmount the main task.
             let main_mount_dir = format!("{NS_DIR}/main/net");
 
             if let Err(err) = umount(main_mount_dir.as_str()) {
                 error!(%main_mount_dir, error = %err, "error umounting");
-            }
-
-            // Kills all the running plugin PIDs
-            if let Ok(file) = OpenOptions::new().read(true).open(PID_FILE) {
-                let reader = std::io::BufReader::new(file);
-                let system = System::new_all();
-
-                for line in reader.lines() {
-                    if let Ok(line) = line
-                        && let Ok(pid) = line.parse::<u32>()
-                        && let Some(process) =
-                            system.process(SystemPid::from_u32(pid))
-                    {
-                        process.kill();
-                        debug!("network shutdown complete");
-                    }
-                }
             }
 
             // Delete the PID file.
