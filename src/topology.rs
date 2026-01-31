@@ -67,9 +67,9 @@ impl Topology {
                 for router in routers {
                     // check if router exists
                     if self.nodes.contains_key(&router.name) {
-                        return Err(NetError::ConfigError(
-                            ConfigError::DuplicateNode(router.name),
-                        ));
+                        return Err(
+                            ConfigError::DuplicateNode(router.name).into()
+                        );
                     }
                     self.nodes
                         .insert(router.name.clone(), Node::Router(router));
@@ -83,9 +83,9 @@ impl Topology {
                 let switches = self.parse_switch_configs(switches_configs)?;
                 for switch in switches {
                     if self.nodes.contains_key(&switch.name) {
-                        return Err(NetError::ConfigError(
-                            ConfigError::DuplicateNode(switch.name),
-                        ));
+                        return Err(
+                            ConfigError::DuplicateNode(switch.name).into()
+                        );
                     }
                     self.nodes
                         .insert(switch.name.clone(), Node::Switch(switch));
@@ -99,24 +99,23 @@ impl Topology {
                 let links = self.parse_links_configs(links_configs)?;
                 for link in links {
                     if !self.nodes.contains_key(&link.src_device) {
-                        return Err(NetError::ConfigError(
-                            ConfigError::UnknownNode(link.src_device),
-                        ));
+                        return Err(
+                            ConfigError::UnknownNode(link.src_device).into()
+                        );
                     }
                     if !self.nodes.contains_key(&link.dst_device) {
-                        return Err(NetError::ConfigError(
-                            ConfigError::UnknownNode(link.dst_device),
-                        ));
+                        return Err(
+                            ConfigError::UnknownNode(link.dst_device).into()
+                        );
                     }
 
                     // check if link has already been configured.
                     if self.link_exists(&link) {
-                        return Err(NetError::ConfigError(
-                            ConfigError::DuplicateLink {
-                                src: link.src(),
-                                dst: link.dst(),
-                            },
-                        ));
+                        return Err(ConfigError::DuplicateLink {
+                            src: link.src(),
+                            dst: link.dst(),
+                        }
+                        .into());
                     }
                     self.links.push(link);
                 }
@@ -137,39 +136,38 @@ impl Topology {
                     let router_name = match router_name {
                         Yaml::String(name) => name,
                         _ => {
-                            return Err(NetError::ConfigError(
-                                ConfigError::IncorrectType {
-                                    field: format!("router_name"),
-                                    expected: format!("string"),
-                                },
-                            ));
+                            return Err(ConfigError::IncorrectType {
+                                field: format!("routers.router[name??]"),
+                                expected: "string".to_string(),
+                            }
+                            .into());
                         }
                     };
 
                     let router_config = match router_config {
                         Yaml::Hash(router_config) => router_config,
                         _ => {
-                            return Err(NetError::ConfigError(
-                                ConfigError::IncorrectType {
-                                    field: format!("router config"),
-                                    expected: format!("hash"),
-                                },
-                            ));
+                            return Err(ConfigError::IncorrectType {
+                                field: format!(
+                                    "routers.router[router_name][config??]"
+                                ),
+                                expected: "hash".to_string(),
+                            }
+                            .into());
                         }
                     };
 
-                    // TODO: replace unwrap() with ?
                     let router =
-                        Router::from_yaml_config(&router_name, router_config)
-                            .unwrap();
+                        Router::from_yaml_config(&router_name, router_config)?;
                     routers.push(router);
                 }
                 Ok(routers)
             }
-            _ => Err(NetError::ConfigError(ConfigError::IncorrectType {
-                field: "routers".to_string(),
+            _ => Err(ConfigError::IncorrectType {
+                field: "routers[config??]".to_string(),
                 expected: "hash".to_string(),
-            })),
+            }
+            .into()),
         }
     }
 
@@ -184,40 +182,38 @@ impl Topology {
                     let switch_name = match switch_name {
                         Yaml::String(name) => name,
                         _ => {
-                            return Err(NetError::ConfigError(
-                                ConfigError::IncorrectType {
-                                    field: format!("switch_name"),
-                                    expected: format!("string"),
-                                },
-                            ));
+                            return Err(ConfigError::IncorrectType {
+                                field: format!("switches.switch[name??]"),
+                                expected: "string".to_string(),
+                            }
+                            .into());
                         }
                     };
 
                     let switch_config = match switch_config {
                         Yaml::Hash(switch_config) => switch_config,
                         _ => {
-                            return Err(NetError::ConfigError(
-                                ConfigError::IncorrectType {
-                                    field: format!("switch config"),
-                                    expected: format!("hash"),
-                                },
-                            ));
+                            return Err(ConfigError::IncorrectType {
+                                field: format!(
+                                    "switches.switch[{switch_name}][config??]"
+                                ),
+                                expected: "hash".to_string(),
+                            }
+                            .into());
                         }
                     };
 
-                    // TODO: replace this unwrap() with IncorrectType.
                     let switch =
                         Switch::from_yaml_config(switch_name, switch_config)?;
                     switches.push(switch);
                 }
             }
             _ => {
-                return Err(NetError::ConfigError(
-                    ConfigError::IncorrectType {
-                        field: "switches".to_string(),
-                        expected: "hash".to_string(),
-                    },
-                ));
+                return Err(ConfigError::IncorrectType {
+                    field: format!("switches[config??]"),
+                    expected: "hash".to_string(),
+                }
+                .into());
             }
         }
         Ok(switches)
@@ -253,10 +249,11 @@ impl Topology {
                 }
             }
         } else {
-            return Err(NetError::ConfigError(ConfigError::IncorrectType {
-                field: "links".to_string(),
+            return Err(ConfigError::IncorrectType {
+                field: format!("links[config??]"),
                 expected: "array".to_string(),
-            }));
+            }
+            .into());
         }
         Ok(links)
     }
@@ -269,10 +266,11 @@ impl Topology {
 
         match field_value {
             Yaml::String(value) => Ok(value.to_string()),
-            _ => Err(NetError::ConfigError(ConfigError::IncorrectType {
+            _ => Err(ConfigError::IncorrectType {
                 field: field.to_string(),
                 expected: "string".to_string(),
-            })),
+            }
+            .into()),
         }
     }
 

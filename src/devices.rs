@@ -13,7 +13,7 @@ use tracing::{debug, error};
 use yaml_rust2::Yaml;
 use yaml_rust2::yaml::Hash;
 
-use crate::error::{ConfigError, Error, NetError};
+use crate::error::{ConfigError, Error};
 use crate::{
     DEVICES_NS_DIR, NS_DIR, NetResult, Result, kill_process, mount_device,
 };
@@ -62,25 +62,24 @@ impl Interface {
                                 interface.addresses.push(IpNetwork::V4(ip_net));
                             }
                             Err(_) => {
-                                return Err(NetError::ConfigError(
-                                    ConfigError::InvalidAddress {
-                                        addr_type: format!("ipv4"),
-                                        address: format!("addr_str")
-                                            .to_string(),
-                                        interface: format!("{name}"),
-                                    },
-                                ));
+                                return Err(ConfigError::InvalidAddress {
+                                    addr_type: "ipv4".to_string(),
+                                    address: "addr_str".to_string(),
+                                    interface: format!("iface.{name}.ipv4"),
+                                }
+                                .into());
                             }
                         }
                     }
                 }
                 _ => {
-                    return Err(NetError::ConfigError(
-                        ConfigError::IncorrectType {
-                            field: format!("interface ipv4"),
-                            expected: format!("array"),
-                        },
-                    ));
+                    return Err(ConfigError::IncorrectType {
+                        field: format!(
+                            "interfaces.iface[{name}].ipv4[config??]"
+                        ),
+                        expected: "array".to_string(),
+                    }
+                    .into());
                 }
             }
         }
@@ -98,25 +97,22 @@ impl Interface {
                                 interface.addresses.push(IpNetwork::V6(ip_net));
                             }
                             Err(_) => {
-                                return Err(NetError::ConfigError(
-                                    ConfigError::InvalidAddress {
-                                        addr_type: format!("ipv4"),
-                                        address: format!("addr_str")
-                                            .to_string(),
-                                        interface: format!("{name}"),
-                                    },
-                                ));
+                                return Err(ConfigError::InvalidAddress {
+                                    addr_type: "ipv6".to_string(),
+                                    address: "addr_str".to_string(),
+                                    interface: format!("iface.{name}.ipv6"),
+                                }
+                                .into());
                             }
                         }
                     }
                 }
                 _ => {
-                    return Err(NetError::ConfigError(
-                        ConfigError::IncorrectType {
-                            field: format!("interface ipv4"),
-                            expected: format!("array"),
-                        },
-                    ));
+                    return Err(ConfigError::IncorrectType {
+                        field: format!("ifaces.iface[[{name}]].ipv6[config??]"),
+                        expected: "array".to_string(),
+                    }
+                    .into());
                 }
             }
         }
@@ -181,24 +177,26 @@ impl Router {
                                 router.interfaces.push(interface);
                             }
                             _ => {
-                                return Err(NetError::ConfigError(
-                                    ConfigError::IncorrectType {
-                                        field: format!(
-                                            "router {name}->interface {iface_name}"
-                                        ),
-                                        expected: format!("hash"),
-                                    },
-                                ));
+                                return Err(ConfigError::IncorrectType {
+                                    field: format!(
+                                        "routers.router[{name}].interfaces.{iface_name}[config??]"
+                                    ),
+                                    expected: "hash".to_string(),
+                                }
+                                .into());
                             }
                         }
                     }
                 }
                 Ok(router)
             }
-            _ => Err(NetError::ConfigError(ConfigError::IncorrectType {
-                field: format!("router {name} interfaces"),
-                expected: format!("hash"),
-            })),
+            _ => Err(ConfigError::IncorrectType {
+                field: format!(
+                    "routers.router[{name}].interfaces[interface-config??]"
+                ),
+                expected: "hash".to_string(),
+            }
+            .into()),
         }
     }
 
@@ -412,32 +410,33 @@ impl Switch {
                                 switch.interfaces.push(interface);
                             }
                             _ => {
-                                return Err(NetError::ConfigError(
-                                    ConfigError::IncorrectType {
-                                        field: format!("switch interfaces"),
-                                        expected: format!("Hash"),
-                                    },
-                                ));
+                                return Err(ConfigError::IncorrectType {
+                                    field: format!(
+                                        "switches.switch[{switch_name}].interfaces[config??]"
+                                    ),
+                                    expected: "hash".to_string(),
+                                }
+                                .into());
                             }
                         },
                         _ => {
-                            return Err(NetError::ConfigError(
-                                ConfigError::IncorrectType {
-                                    field: format!(
-                                        "switch {switch_name} interface name"
-                                    ),
-                                    expected: format!("string"),
-                                },
-                            ));
+                            return Err(ConfigError::IncorrectType {
+                                field: format!(
+                                    "switches.switch[{switch_name}].interfaces[name??]"
+                                ),
+                                expected: "string".to_string(),
+                            }
+                            .into());
                         }
                     }
                 }
                 Ok(switch)
             }
-            _ => Err(NetError::ConfigError(ConfigError::IncorrectType {
-                field: format!("switch {switch_name}"),
-                expected: format!("hash"),
-            })),
+            _ => Err(ConfigError::IncorrectType {
+                field: format!("switches.switch[{switch_name}][config??]"),
+                expected: "hash".to_string(),
+            }
+            .into()),
         }
     }
 
