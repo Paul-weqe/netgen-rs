@@ -148,9 +148,6 @@ pub struct Router {
     pub file_path: Option<String>,
     pub interfaces: Vec<Interface>,
     pub pid: Option<Pid>,
-
-    // This will be run when the startup is run
-    pub startup_config: Option<String>,
 }
 
 impl Router {
@@ -162,47 +159,47 @@ impl Router {
             file_path: None,
             interfaces: vec![],
             pid: None,
-            startup_config: None,
         }
     }
 
-    pub fn from_yaml_config(name: &str, router_config: &Hash) -> Result<Self> {
+    pub fn from_yaml_config(
+        name: &str,
+        router_config: &Hash,
+    ) -> NetResult<Self> {
         let mut router = Self::new(name);
 
-        // == Interface configs ==
-        if let Some(Yaml::Hash(interfaces_config)) =
-            router_config.get(&Yaml::String(String::from("interfaces")))
-        {
-            for (iface_name, iface_config) in interfaces_config {
-                if let Yaml::String(iface_name) = iface_name
-                    && let Yaml::Hash(iface_config) = iface_config
-                {
-                    if let Ok(interface) =
-                        Interface::from_yaml_config(iface_name, iface_config)
-                    {
-                        router.interfaces.push(interface);
+        match router_config.get(&Yaml::String(String::from("interfaces"))) {
+            Some(Yaml::Hash(interfaces_config)) => {
+                for (iface_name, iface_config) in interfaces_config {
+                    if let Yaml::String(iface_name) = iface_name {
+                        match iface_config {
+                            Yaml::Hash(iface_config) => {
+                                let interface = Interface::from_yaml_config(
+                                    iface_name,
+                                    iface_config,
+                                )?;
+                                router.interfaces.push(interface);
+                            }
+                            _ => {
+                                return Err(NetError::ConfigError(
+                                    ConfigError::IncorrectType {
+                                        field: format!(
+                                            "router {name}->interface {iface_name}"
+                                        ),
+                                        expected: format!("hash"),
+                                    },
+                                ));
+                            }
+                        }
                     }
-                } else {
-                    return Err(Error::GeneralError(String::from(
-                        "Interface content for 'interfaces' not a dictionary",
-                    )));
                 }
+                Ok(router)
             }
+            _ => Err(NetError::ConfigError(ConfigError::IncorrectType {
+                field: format!("router {name} interfaces"),
+                expected: format!("hash"),
+            })),
         }
-
-        // Get the startup config
-        if let Some(startup_config) =
-            router_config.get(&Yaml::String(String::from("startup-config")))
-        {
-            if let Yaml::String(startup_config) = startup_config {
-                router.startup_config = Some(startup_config.to_string());
-            } else {
-                return Err(Error::IncorrectYamlType(String::from(
-                    "startup-config",
-                )));
-            }
-        }
-        Ok(router)
     }
 
     /// Creates a namespace representing the router and turns on the
