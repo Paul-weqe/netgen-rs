@@ -2,7 +2,7 @@ pub mod devices;
 pub mod error;
 pub mod topology;
 
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, create_dir_all};
 use std::io::{BufRead, Write};
 use std::os::fd::AsFd;
 use std::path::Path;
@@ -51,7 +51,7 @@ pub fn mount_device(device_name: Option<String>, pid: Pid) -> Result<String> {
 }
 
 fn create_ns(device: &DeviceDetails) -> Result<()> {
-    std::fs::create_dir_all(&device.home_path).map_err(|e| {
+    create_dir_all(&device.home_path).map_err(|e| {
         error::Error::GeneralError(format!(
             "unable to create namespace directory {}\n{}",
             &device.home_path,

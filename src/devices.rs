@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::fs::{File, remove_dir_all};
 use std::future::Future;
 use std::os::fd::AsFd;
 
@@ -216,7 +216,7 @@ impl Router {
         }
 
         // Remove the files.
-        if let Err(err) = std::fs::remove_dir_all(device_dir.as_str()) {
+        if let Err(err) = remove_dir_all(device_dir.as_str()) {
             error!(router = %self.name, error = %err, dir=%device_dir,
                 "problem removing directory");
         } else {

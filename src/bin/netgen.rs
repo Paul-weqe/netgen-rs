@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Write;
 use std::os::fd::AsFd;
 
@@ -48,7 +48,7 @@ fn main() -> Result<()> {
             let pid = Pid::this();
 
             // Create the directory storing our namespaces if it doesn't exists
-            let _ = std::fs::create_dir_all(DEVICES_NS_DIR);
+            let _ = fs::create_dir_all(DEVICES_NS_DIR);
             let mut topology =
                 runtime.block_on(async { parse_config_args(start_args) })?;
 
@@ -78,7 +78,7 @@ fn main() -> Result<()> {
             }
 
             // Delete the PID file.
-            let _ = std::fs::remove_file(PID_FILE);
+            let _ = fs::remove_file(PID_FILE);
         }
         _ => {
             // Probably "help"
