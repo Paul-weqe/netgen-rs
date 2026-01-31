@@ -13,8 +13,8 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::{ForkResult, Pid, fork, pause};
 
 pub type Result<T> = std::result::Result<T, error::Error>;
+pub type NetResult<T> = std::result::Result<T, error::NetError>;
 
-pub const ALLOWED_PLUGINS: [&str; 2] = ["holo", "frr"];
 pub const NS_DIR: &str = "/tmp/netgen-rs/ns";
 pub const DEVICES_NS_DIR: &str = "/tmp/netgen-rs/ns/devices";
 pub const PID_FILE: &str = "/tmp/netgen-rs/ns/main/.pid";
@@ -101,8 +101,6 @@ fn create_ns(device: &DeviceDetails) -> Result<()> {
 // Kills the process specified in the file.
 // Mostly a .pid file.
 pub fn kill_process(pid_file: &str) -> Result<()> {
-    println!("killing {pid_file}");
-
     // Kills all the running plugin PIDs.
     if let Ok(file) = OpenOptions::new().read(true).open(pid_file) {
         let mut reader = std::io::BufReader::new(file);

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{Error as IoError, Read};
+use std::io::Read;
 use std::os::fd::AsRawFd;
 
 use nix::net::if_::if_nametoindex;
@@ -11,11 +11,11 @@ use tokio;
 use tokio::runtime::Runtime;
 use tracing::{debug, debug_span, error};
 use yaml_rust2::YamlLoader;
-use yaml_rust2::yaml::Yaml;
+use yaml_rust2::yaml::{Hash, Yaml};
 
-use crate::Result;
 use crate::devices::{Link, Node, Router, Switch};
-use crate::error::Error;
+use crate::error::{ConfigError, NetError};
+use crate::{NetResult, Result};
 
 #[derive(Debug)]
 pub struct Topology {
@@ -38,107 +38,85 @@ impl Topology {
         }
     }
 
-    pub fn from_yaml_file(file: &mut File) -> Result<Self> {
+    pub fn from_yaml_file(file: &mut File) -> NetResult<Self> {
         let mut contents = String::new();
         let _ = file.read_to_string(&mut contents);
         Self::from_yaml_str(contents.as_str())
     }
 
-    pub fn from_yaml_str(yaml_str: &str) -> Result<Self> {
+    pub fn from_yaml_str(yaml_str: &str) -> NetResult<Self> {
         let mut topology = Self::new();
         let yaml_content =
-            YamlLoader::load_from_str(yaml_str).map_err(Error::ScanError)?;
-        for yaml_group in yaml_content {
-            topology.parse_topology_config(&yaml_group).map_err(|err| {
-                Error::GeneralError(format!(
-                    "error parsing config file -> {err:?}"
-                ))
+            YamlLoader::load_from_str(yaml_str).map_err(|err| {
+                NetError::ConfigError(ConfigError::YamlSyntax(err))
             })?;
+
+        for yaml_group in yaml_content {
+            topology.parse_topology_config(&yaml_group)?;
         }
         Ok(topology)
     }
 
-    pub fn parse_topology_config(&mut self, yaml_data: &Yaml) -> Result<()> {
+    pub fn parse_topology_config(&mut self, yaml_data: &Yaml) -> NetResult<()> {
         if let Yaml::Hash(topo_config_group) = yaml_data {
-            // fetch the routers
+            // Fetch the routers.
             if let Some(routers_configs) =
                 topo_config_group.get(&Yaml::String(String::from("routers")))
-                && let Ok(routers) = self.parse_router_configs(routers_configs)
             {
+                let routers = self.parse_router_configs(routers_configs)?;
                 for router in routers {
                     // check if router exists
                     if self.nodes.contains_key(&router.name) {
-                        let err = format!(
-                            "Node {} has been configured more than once",
-                            router.name
-                        );
-                        let io_err = IoError::other(err.as_str());
-                        return Err(Error::IoError(io_err));
+                        return Err(NetError::ConfigError(
+                            ConfigError::DuplicateNode(router.name),
+                        ));
                     }
                     self.nodes
                         .insert(router.name.clone(), Node::Router(router));
                 }
-            } else {
-                // TODO: handle errors thrown when fetching the routers.
             }
 
-            // fetch the switches
+            // Fetch switches.
             if let Some(switches_configs) =
                 topo_config_group.get(&Yaml::String(String::from("switches")))
             {
-                if let Ok(switches) =
-                    self.parse_switch_configs(switches_configs)
-                {
-                    for switch in switches {
-                        if self.nodes.contains_key(&switch.name) {
-                            let err = format!(
-                                "Node {} has been configured more than once",
-                                switch.name
-                            );
-                            let io_err = IoError::other(err.as_str());
-                            return Err(Error::IoError(io_err));
-                        }
-                        self.nodes
-                            .insert(switch.name.clone(), Node::Switch(switch));
+                let switches = self.parse_switch_configs(switches_configs)?;
+                for switch in switches {
+                    if self.nodes.contains_key(&switch.name) {
+                        return Err(NetError::ConfigError(
+                            ConfigError::DuplicateNode(switch.name),
+                        ));
                     }
-                } else {
-                    // TODO: handle errors thrown when fetching the switches
+                    self.nodes
+                        .insert(switch.name.clone(), Node::Switch(switch));
                 }
             }
 
-            // fetch the links
+            // Fetch the links
             if let Some(links_configs) =
                 topo_config_group.get(&Yaml::String(String::from("links")))
-                && let Ok(links) = self.parse_links_configs(links_configs)
             {
+                let links = self.parse_links_configs(links_configs)?;
                 for link in links {
-                    // check if link devices exist in config
                     if !self.nodes.contains_key(&link.src_device) {
-                        let err = format!(
-                            "src node name {} configured in {:?} does not exist",
-                            link.src_device, link
-                        );
-                        let io_err = IoError::other(err.as_str());
-                        return Err(Error::IoError(io_err));
+                        return Err(NetError::ConfigError(
+                            ConfigError::UnknownNode(link.src_device),
+                        ));
                     }
                     if !self.nodes.contains_key(&link.dst_device) {
-                        let err = format!(
-                            "dst node name {} configured in {:?} does not exist",
-                            link.dst_device, link
-                        );
-                        let io_err = IoError::other(err.as_str());
-                        return Err(Error::IoError(io_err));
+                        return Err(NetError::ConfigError(
+                            ConfigError::UnknownNode(link.dst_device),
+                        ));
                     }
 
                     // check if link has already been configured.
                     if self.link_exists(&link) {
-                        let err = format!(
-                            "link {} <-> {} has been configured more than once",
-                            link.src(),
-                            link.dst()
-                        );
-                        let io_err = IoError::other(err.as_str());
-                        return Err(Error::IoError(io_err));
+                        return Err(NetError::ConfigError(
+                            ConfigError::DuplicateLink {
+                                src: link.src(),
+                                dst: link.dst(),
+                            },
+                        ));
                     }
                     self.links.push(link);
                 }
@@ -150,47 +128,97 @@ impl Topology {
     pub fn parse_router_configs(
         &self,
         routers_config: &Yaml,
-    ) -> Result<Vec<Router>> {
+    ) -> NetResult<Vec<Router>> {
         let mut routers: Vec<Router> = vec![];
-        if let Yaml::Hash(configs) = routers_config {
-            for (router_name, router_config) in configs {
-                if let Yaml::String(router_name) = router_name
-                    && let Yaml::Hash(router_config) = router_config
-                {
-                    if let Ok(router) =
-                        Router::from_yaml_config(router_name, router_config)
-                    {
-                        routers.push(router);
-                    }
-                } else {
-                    return Err(Error::IncorrectYamlType(format!(
-                        "{router_name:?}",
-                    )));
+
+        match routers_config {
+            Yaml::Hash(configs) => {
+                for (router_name, router_config) in configs {
+                    let router_name = match router_name {
+                        Yaml::String(name) => name,
+                        _ => {
+                            return Err(NetError::ConfigError(
+                                ConfigError::IncorrectType {
+                                    field: format!("router_name"),
+                                    expected: format!("string"),
+                                },
+                            ));
+                        }
+                    };
+
+                    let router_config = match router_config {
+                        Yaml::Hash(router_config) => router_config,
+                        _ => {
+                            return Err(NetError::ConfigError(
+                                ConfigError::IncorrectType {
+                                    field: format!("router config"),
+                                    expected: format!("hash"),
+                                },
+                            ));
+                        }
+                    };
+
+                    // TODO: replace unwrap() with ?
+                    let router =
+                        Router::from_yaml_config(&router_name, router_config)
+                            .unwrap();
+                    routers.push(router);
                 }
+                Ok(routers)
             }
+            _ => Err(NetError::ConfigError(ConfigError::IncorrectType {
+                field: "routers".to_string(),
+                expected: "hash".to_string(),
+            })),
         }
-        Ok(routers)
     }
 
     pub fn parse_switch_configs(
         &self,
         switches_configs: &Yaml,
-    ) -> Result<Vec<Switch>> {
+    ) -> NetResult<Vec<Switch>> {
         let mut switches: Vec<Switch> = vec![];
-        if let Yaml::Hash(configs) = switches_configs {
-            for (switch_name, switch_config) in configs {
-                if let Yaml::String(switch_name) = switch_name
-                    && let Yaml::Hash(switch_config) = switch_config
-                {
-                    if let Ok(switch) =
+        match switches_configs {
+            Yaml::Hash(configs) => {
+                for (switch_name, switch_config) in configs {
+                    let switch_name = match switch_name {
+                        Yaml::String(name) => name,
+                        _ => {
+                            return Err(NetError::ConfigError(
+                                ConfigError::IncorrectType {
+                                    field: format!("switch_name"),
+                                    expected: format!("string"),
+                                },
+                            ));
+                        }
+                    };
+
+                    let switch_config = match switch_config {
+                        Yaml::Hash(switch_config) => switch_config,
+                        _ => {
+                            return Err(NetError::ConfigError(
+                                ConfigError::IncorrectType {
+                                    field: format!("switch config"),
+                                    expected: format!("hash"),
+                                },
+                            ));
+                        }
+                    };
+
+                    // TODO: replace this unwrap() with IncorrectType.
+                    let switch =
                         Switch::from_yaml_config(switch_name, switch_config)
-                    {
-                        switches.push(switch);
-                    } else {
-                        // TODO: handle a case where switch_name is not a string
-                        // or the switch config is not a Yaml::Hash
-                    }
+                            .unwrap();
+                    switches.push(switch);
                 }
+            }
+            _ => {
+                return Err(NetError::ConfigError(
+                    ConfigError::IncorrectType {
+                        field: "switches".to_string(),
+                        expected: "hash".to_string(),
+                    },
+                ));
             }
         }
         Ok(switches)
@@ -199,34 +227,54 @@ impl Topology {
     pub fn parse_links_configs(
         &self,
         links_configs: &Yaml,
-    ) -> Result<Vec<Link>> {
+    ) -> NetResult<Vec<Link>> {
         let mut links: Vec<Link> = vec![];
         if let Yaml::Array(configs) = links_configs {
             for link_config in configs {
                 if let Yaml::Hash(link_config) = link_config {
-                    if let Some(Yaml::String(src)) = link_config
-                        .get(&Yaml::String(String::from("src-device")))
-                        && let Some(Yaml::String(src_iface)) = link_config
-                            .get(&Yaml::String(String::from("src-iface")))
-                        && let Some(Yaml::String(dst)) = link_config
-                            .get(&Yaml::String(String::from("dst-device")))
-                        && let Some(Yaml::String(dst_iface)) = link_config
-                            .get(&Yaml::String(String::from("dst-iface")))
-                    {
-                        let link = Link {
-                            src_device: src.to_string(),
-                            src_iface: src_iface.to_string(),
-                            dst_device: dst.to_string(),
-                            dst_iface: dst_iface.to_string(),
-                        };
-                        links.push(link);
-                    } else {
-                        // TODO: throw error when either of the link configs is off
-                    }
+                    let link = Link {
+                        src_device: Self::get_string_field(
+                            &link_config,
+                            "src-device",
+                        )?,
+                        src_iface: Self::get_string_field(
+                            &link_config,
+                            "src-iface",
+                        )?,
+                        dst_device: Self::get_string_field(
+                            &link_config,
+                            "dst-device",
+                        )?,
+                        dst_iface: Self::get_string_field(
+                            &link_config,
+                            "dst-iface",
+                        )?,
+                    };
+                    links.push(link);
                 }
             }
+        } else {
+            return Err(NetError::ConfigError(ConfigError::IncorrectType {
+                field: "links".to_string(),
+                expected: "array".to_string(),
+            }));
         }
         Ok(links)
+    }
+
+    // Get field value from list.
+    fn get_string_field(config: &Hash, field: &str) -> NetResult<String> {
+        let field_value = config
+            .get(&Yaml::String(field.to_string()))
+            .ok_or_else(|| ConfigError::MissingField(field.to_string()))?;
+
+        match field_value {
+            Yaml::String(value) => Ok(value.to_string()),
+            _ => Err(NetError::ConfigError(ConfigError::IncorrectType {
+                field: field.to_string(),
+                expected: "string".to_string(),
+            })),
+        }
     }
 
     pub fn link_exists(&self, link: &Link) -> bool {
