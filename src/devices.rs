@@ -13,8 +13,10 @@ use tracing::{debug, error};
 use yaml_rust2::Yaml;
 use yaml_rust2::yaml::Hash;
 
-use crate::error::Error;
-use crate::{DEVICES_NS_DIR, NS_DIR, Result, kill_process, mount_device};
+use crate::error::{ConfigError, Error, NetError};
+use crate::{
+    DEVICES_NS_DIR, NS_DIR, NetResult, Result, kill_process, mount_device,
+};
 
 // ==== Interface ====
 #[derive(Debug, Clone)]
@@ -41,7 +43,7 @@ impl Interface {
         Ok(())
     }
 
-    fn from_yaml_config(name: &str, yaml_config: &Hash) -> Result<Self> {
+    fn from_yaml_config(name: &str, yaml_config: &Hash) -> NetResult<Self> {
         let mut interface = Interface {
             name: name.to_string(),
             addresses: vec![],
@@ -51,16 +53,35 @@ impl Interface {
         if let Some(ipv4_addresses) =
             yaml_config.get(&Yaml::String(String::from("ipv4")))
         {
-            if let Yaml::Array(ipv4_addresses) = ipv4_addresses {
-                let mut addr_iter = ipv4_addresses.iter();
-                while let Some(Yaml::String(addr_str)) = addr_iter.next() {
-                    if let Ok(ip_net) = addr_str.parse::<Ipv4Network>() {
-                        interface.addresses.push(IpNetwork::V4(ip_net));
+            match ipv4_addresses {
+                Yaml::Array(ipv4_addresses) => {
+                    let mut addr_iter = ipv4_addresses.iter();
+                    while let Some(Yaml::String(addr_str)) = addr_iter.next() {
+                        match addr_str.parse::<Ipv4Network>() {
+                            Ok(ip_net) => {
+                                interface.addresses.push(IpNetwork::V4(ip_net));
+                            }
+                            Err(_) => {
+                                return Err(NetError::ConfigError(
+                                    ConfigError::InvalidAddress {
+                                        addr_type: format!("ipv4"),
+                                        address: format!("addr_str")
+                                            .to_string(),
+                                        interface: format!("{name}"),
+                                    },
+                                ));
+                            }
+                        }
                     }
                 }
-            } else {
-                // When ipv4 is not an array
-                return Err(Error::IncorrectYamlType(String::from("ipv4")));
+                _ => {
+                    return Err(NetError::ConfigError(
+                        ConfigError::IncorrectType {
+                            field: format!("interface ipv4"),
+                            expected: format!("array"),
+                        },
+                    ));
+                }
             }
         }
 
@@ -68,16 +89,35 @@ impl Interface {
         if let Some(ipv6_addresses) =
             yaml_config.get(&Yaml::String(String::from("ipv6")))
         {
-            if let Yaml::Array(ipv6_addresses) = ipv6_addresses {
-                let mut addr_iter = ipv6_addresses.iter();
-                while let Some(Yaml::String(addr_str)) = addr_iter.next() {
-                    if let Ok(ip_net) = addr_str.parse::<Ipv6Network>() {
-                        interface.addresses.push(IpNetwork::V6(ip_net));
+            match ipv6_addresses {
+                Yaml::Array(ipv4_addresses) => {
+                    let mut addr_iter = ipv4_addresses.iter();
+                    while let Some(Yaml::String(addr_str)) = addr_iter.next() {
+                        match addr_str.parse::<Ipv6Network>() {
+                            Ok(ip_net) => {
+                                interface.addresses.push(IpNetwork::V6(ip_net));
+                            }
+                            Err(_) => {
+                                return Err(NetError::ConfigError(
+                                    ConfigError::InvalidAddress {
+                                        addr_type: format!("ipv4"),
+                                        address: format!("addr_str")
+                                            .to_string(),
+                                        interface: format!("{name}"),
+                                    },
+                                ));
+                            }
+                        }
                     }
                 }
-            } else {
-                // When ipv4 is not an array
-                return Err(Error::IncorrectYamlType(String::from("ipv6")));
+                _ => {
+                    return Err(NetError::ConfigError(
+                        ConfigError::IncorrectType {
+                            field: format!("interface ipv4"),
+                            expected: format!("array"),
+                        },
+                    ));
+                }
             }
         }
         Ok(interface)
@@ -359,29 +399,49 @@ impl Switch {
     pub fn from_yaml_config(
         switch_name: &str,
         switch_config: &Hash,
-    ) -> Result<Self> {
+    ) -> NetResult<Self> {
         let mut switch = Self::new(switch_name);
 
-        if let Some(Yaml::Hash(interfaces_config)) =
-            switch_config.get(&Yaml::String(String::from("interfaces")))
-        {
-            for (iface_name, iface_config) in interfaces_config {
-                if let Yaml::String(iface_name) = iface_name
-                    && let Yaml::Hash(iface_config) = iface_config
-                {
-                    let interface =
-                        Interface::from_yaml_config(iface_name, iface_config)?;
-                    switch.interfaces.push(interface);
-                } else {
-                    return Err(Error::IncorrectYamlType(String::from(
-                        "interfaces['value']",
-                    )));
+        match switch_config.get(&Yaml::String(String::from("interfaces"))) {
+            Some(Yaml::Hash(interfaces_config)) => {
+                for (iface_name, iface_config) in interfaces_config {
+                    match iface_name {
+                        Yaml::String(iface_name) => match iface_config {
+                            Yaml::Hash(iface_config) => {
+                                let interface = Interface::from_yaml_config(
+                                    iface_name,
+                                    iface_config,
+                                )?;
+                                switch.interfaces.push(interface);
+                            }
+                            _ => {
+                                return Err(NetError::ConfigError(
+                                    ConfigError::IncorrectType {
+                                        field: format!("switch interfaces"),
+                                        expected: format!("Hash"),
+                                    },
+                                ));
+                            }
+                        },
+                        _ => {
+                            return Err(NetError::ConfigError(
+                                ConfigError::IncorrectType {
+                                    field: format!(
+                                        "switch {switch_name} interface name"
+                                    ),
+                                    expected: format!("string"),
+                                },
+                            ));
+                        }
+                    }
                 }
+                Ok(switch)
             }
-        } else {
-            return Err(Error::IncorrectYamlType(String::from("interfaces")));
+            _ => Err(NetError::ConfigError(ConfigError::IncorrectType {
+                field: format!("switch {switch_name}"),
+                expected: format!("hash"),
+            })),
         }
-        Ok(switch)
     }
 
     /// Initializes a network bridge representing the switch.

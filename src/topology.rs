@@ -207,8 +207,7 @@ impl Topology {
 
                     // TODO: replace this unwrap() with IncorrectType.
                     let switch =
-                        Switch::from_yaml_config(switch_name, switch_config)
-                            .unwrap();
+                        Switch::from_yaml_config(switch_name, switch_config)?;
                     switches.push(switch);
                 }
             }
