@@ -293,7 +293,7 @@ impl Topology {
         let power_on_span = debug_span!("switch-power-on");
         let _span_guard = power_on_span.enter();
 
-        for (_, node) in self.nodes.iter_mut() {
+        for node in self.nodes.values_mut() {
             if let Node::Switch(switch) = node {
                 switch.power_on(&self.runtime)?;
             }
@@ -310,7 +310,7 @@ impl Topology {
         let power_on_span = debug_span!("router-power-on");
         let _span_guard = power_on_span.enter();
 
-        for (_, node) in self.nodes.iter_mut() {
+        for node in self.nodes.values_mut() {
             if let Node::Router(router) = node {
                 router.power_on()?;
             }
@@ -327,7 +327,7 @@ impl Topology {
         let power_off_span = debug_span!("net-stop");
         let _span_guard = power_off_span.enter();
         // Powers off all the nodes
-        for (_, node) in self.nodes.iter_mut() {
+        for node in self.nodes.values_mut() {
             node.power_off();
         }
     }
@@ -335,7 +335,7 @@ impl Topology {
     pub fn setup_links(&self) -> Result<()> {
         // Make sure the loopback interfaces in all the routers in in "up" state.
         // This is not the default when creating these namespaces.
-        for (_, node) in self.nodes.iter() {
+        for node in self.nodes.values() {
             if let Node::Router(router) = node {
                 router.iface_up(1, &self.runtime)?;
             }
@@ -347,7 +347,7 @@ impl Topology {
         }
 
         // Add addresss for links in the router nodes.
-        for (_, node) in self.nodes.iter() {
+        for node in self.nodes.values() {
             if let Node::Router(router) = node {
                 let _ = router.add_iface_addresses(&self.runtime);
             }
