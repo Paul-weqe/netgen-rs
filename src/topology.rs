@@ -1,21 +1,16 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read;
-use std::os::fd::AsRawFd;
 
-use nix::net::if_::if_nametoindex;
-use rand::Rng;
-use rand::distributions::Alphanumeric;
-use rtnetlink::{LinkUnspec, LinkVeth, new_connection};
 use tokio;
 use tokio::runtime::Runtime;
-use tracing::{debug, debug_span, error};
+use tracing::debug_span;
 use yaml_rust2::YamlLoader;
 use yaml_rust2::yaml::{Hash, Yaml};
 
 use crate::NetResult;
-use crate::devices::{FromYamlConfig, Link, Node, Router, Switch};
-use crate::error::{ConfigError, LinkError, NamespaceError, NetError};
+use crate::devices::{FromYamlConfig, Link, LinkManager, Node, Router, Switch};
+use crate::error::{ConfigError, NetError};
 
 // struct TopologyParser ====
 
@@ -343,185 +338,11 @@ impl Topology {
     }
 
     pub fn setup_links(&self) -> NetResult<()> {
-        // Make sure the loopback interfaces in all the routers in in "up" state.
-        // This is not the default when creating these namespaces.
-        for node in self.nodes.values() {
-            if let Node::Router(router) = node {
-                router.iface_up(1, &self.runtime)?;
-            }
-        }
-
-        // create links on routers.
-        for link in &self.links {
-            self.create_link(link)?;
-        }
-
-        // Add addresss for links in the router nodes.
-        for node in self.nodes.values() {
-            if let Node::Router(router) = node {
-                let _ = router.add_iface_addresses(&self.runtime);
-            }
-        }
-        Ok(())
-    }
-
-    /// creates a link between two nodes.
-    pub fn create_link(&self, link: &Link) -> NetResult<()> {
-        let runtime = &self.runtime;
-        let src_iface = format!("{}:{}", link.src_device, link.src_iface);
-        let dst_iface = format!("{}:{}", link.dst_device, link.dst_iface);
-        let link_span = debug_span!("link-setup", %src_iface, %dst_iface);
-        let _span_guard = link_span.enter();
-        debug!("setting up");
-
-        // generate random names for veth link
-        // we do this to avoid conflict in the
-        // parent device of interface names.
-        let mut link_name: String;
-        link_name = rand::thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(4)
-            .map(char::from)
-            .collect();
-
-        let node1_link = format!("eth-{link_name}");
-
-        link_name = rand::thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(4)
-            .map(char::from)
-            .collect();
-        let node2_link = format!("eth-{link_name}");
-        runtime.block_on(async {
-            let (connection, handle, _) = new_connection()
-                .map_err(|err| LinkError::ConnectionFailed { source: err })?;
-            tokio::spawn(connection);
-            let request = handle.link().add(
-                LinkVeth::new(node1_link.as_str(), node2_link.as_str()).build(),
-            );
-
-            //request.message_mut().header.flags.push(LinkFlag::Up);
-            request.execute().await.map_err(|err| {
-                LinkError::ExecuteFailed {
-                    operation: "create_link".to_string(),
-                    source: err,
-                }
-            })?;
-
-            Ok::<(), NetError>(())
-        })?;
-        if let Some(src_node) = self.nodes.get(&link.src_device)
-            && let Some(dst_node) = self.nodes.get(&link.dst_device)
-        {
-            // attaches the links to their respective nodes
-            self.attach_link(src_node, node1_link, link.src_iface.clone())?;
-            self.attach_link(dst_node, node2_link, link.dst_iface.clone())?;
-        }
-        debug!("setup complete");
-
-        Ok(())
-    }
-
-    fn attach_link(
-        &self,
-        node: &Node,
-        current_link_name: String,
-        new_link_name: String,
-    ) -> NetResult<()> {
-        let runtime = &self.runtime;
-        runtime.block_on(async {
-            let (connection, handle, _) = new_connection()
-                .map_err(|err| LinkError::ConnectionFailed { source: err })?;
-            tokio::spawn(connection);
-            match node {
-                Node::Router(router) => {
-                    if let Ok(index) =
-                        if_nametoindex(current_link_name.as_str())
-                        && let Some(file_path) = &router.file_path
-                    {
-                        let file = File::open(file_path).map_err(|err| {
-                            NamespaceError::FileOpen {
-                                path: file_path.clone(),
-                                source: err,
-                            }
-                        })?;
-                        let message = LinkUnspec::new_with_index(index)
-                            .setns_by_fd(file.as_raw_fd())
-                            .build();
-                        // move router device to said namespace
-                        handle.link().set(message).execute().await.map_err(
-                            |err| LinkError::ExecuteFailed {
-                                operation:
-                                    "attach-link->move-link-to-router-namespace"
-                                        .to_string(),
-                                source: err,
-                            },
-                        )?;
-
-                        // rename the interface to it's proper name
-                        router
-                            .in_ns(move || async move {
-                                let (conn, handle, _) = new_connection()
-                                    .map_err(|err| {
-                                        LinkError::ConnectionFailed {
-                                            source: err,
-                                        }
-                                    })?;
-                                tokio::spawn(conn);
-
-                                let message = LinkUnspec::new_with_index(index)
-                                    .name(new_link_name)
-                                    .up()
-                                    .build();
-                                // Bring the interface up and give it the proper
-                                // name.
-                                handle
-                                    .link()
-                                    .set(message)
-                                    .execute()
-                                    .await
-                                    .map_err(|err| {
-                                        LinkError::ExecuteFailed {
-                                        operation:
-                                            "attach-link->bring-interface-up"
-                                                .to_string(),
-                                        source: err,
-                                    }
-                                    })?;
-                                Ok::<(), NetError>(())
-                            })
-                            .await??;
-                        // Above: one '?' for the inner method, one for the
-                        // 'in_ns' method.
-                    }
-                }
-                Node::Switch(switch) => {
-                    if let Ok(index) =
-                        if_nametoindex(current_link_name.as_str())
-                        && let Some(ifindex) = switch.ifindex
-                    {
-                        let message = LinkUnspec::new_with_index(index)
-                            .name(new_link_name)
-                            .up()
-                            .build();
-                        if let Err(err) =
-                            handle.link().set(message).execute().await
-                        {
-                            error!(error = %err, "error changing name");
-                        }
-
-                        let message = LinkUnspec::new_with_index(index)
-                            .controller(ifindex)
-                            .build();
-                        if let Err(err) =
-                            handle.link().set(message).execute().await
-                        {
-                            error!(error = %err, "error changing controller");
-                        }
-                    }
-                }
-            }
-            Ok(())
-        })
+        let link_manager = LinkManager {};
+        link_manager.setup_all(
+            &self.runtime,
+            &self.nodes,
+            self.links.as_slice(),
+        )
     }
 }

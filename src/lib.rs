@@ -114,8 +114,8 @@ fn create_ns(device: &DeviceDetails) -> NetResult<()> {
     Ok(())
 }
 
-// Kills the process specified in the file.
-// Mostly a .pid file.
+/// Kills the process specified in the file.
+/// Mostly a .pid file.
 pub fn kill_process(pid_file: &str) -> NetResult<()> {
     // Kills all the running plugin PIDs.
     if let Ok(file) = OpenOptions::new().read(true).open(pid_file) {
