@@ -16,6 +16,12 @@ use yaml_rust2::yaml::Hash;
 use crate::error::{ConfigError, LinkError, NamespaceError, NetError};
 use crate::{DEVICES_NS_DIR, NS_DIR, NetResult, kill_process, mount_device};
 
+// ==== trait FromYamlConfig ====
+
+pub trait FromYamlConfig: Sized {
+    fn from_yaml_config(name: &str, config: &Hash) -> NetResult<Self>;
+}
+
 // ==== Interface ====
 #[derive(Debug, Clone)]
 pub struct Interface {
@@ -47,7 +53,9 @@ impl Interface {
         }
         Ok(())
     }
+}
 
+impl FromYamlConfig for Interface {
     fn from_yaml_config(name: &str, yaml_config: &Hash) -> NetResult<Self> {
         let mut interface = Interface {
             name: name.to_string(),
@@ -145,6 +153,7 @@ impl Node {
 }
 
 // ==== Router =====
+
 #[derive(Debug, Clone)]
 pub struct Router {
     pub name: String,
@@ -162,48 +171,6 @@ impl Router {
             file_path: None,
             interfaces: vec![],
             pid: None,
-        }
-    }
-
-    pub fn from_yaml_config(
-        name: &str,
-        router_config: &Hash,
-    ) -> NetResult<Self> {
-        let mut router = Self::new(name);
-
-        match router_config.get(&Yaml::String(String::from("interfaces"))) {
-            Some(Yaml::Hash(interfaces_config)) => {
-                for (iface_name, iface_config) in interfaces_config {
-                    if let Yaml::String(iface_name) = iface_name {
-                        match iface_config {
-                            Yaml::Hash(iface_config) => {
-                                let interface = Interface::from_yaml_config(
-                                    iface_name,
-                                    iface_config,
-                                )?;
-                                router.interfaces.push(interface);
-                            }
-                            _ => {
-                                return Err(ConfigError::IncorrectType {
-                                    field: format!(
-                                        "routers.router[{name}].interfaces.{iface_name}[config??]"
-                                    ),
-                                    expected: "hash".to_string(),
-                                }
-                                .into());
-                            }
-                        }
-                    }
-                }
-                Ok(router)
-            }
-            _ => Err(ConfigError::IncorrectType {
-                field: format!(
-                    "routers.router[{name}].interfaces[interface-config??]"
-                ),
-                expected: "hash".to_string(),
-            }
-            .into()),
         }
     }
 
@@ -397,6 +364,47 @@ impl Router {
     }
 }
 
+impl FromYamlConfig for Router {
+    fn from_yaml_config(name: &str, router_config: &Hash) -> NetResult<Self> {
+        let mut router = Self::new(name);
+
+        match router_config.get(&Yaml::String(String::from("interfaces"))) {
+            Some(Yaml::Hash(interfaces_config)) => {
+                for (iface_name, iface_config) in interfaces_config {
+                    if let Yaml::String(iface_name) = iface_name {
+                        match iface_config {
+                            Yaml::Hash(iface_config) => {
+                                let interface = Interface::from_yaml_config(
+                                    iface_name,
+                                    iface_config,
+                                )?;
+                                router.interfaces.push(interface);
+                            }
+                            _ => {
+                                return Err(ConfigError::IncorrectType {
+                                    field: format!(
+                                        "routers.router[{name}].interfaces.{iface_name}[config??]"
+                                    ),
+                                    expected: "hash".to_string(),
+                                }
+                                .into());
+                            }
+                        }
+                    }
+                }
+                Ok(router)
+            }
+            _ => Err(ConfigError::IncorrectType {
+                field: format!(
+                    "routers.router[{name}].interfaces[interface-config??]"
+                ),
+                expected: "hash".to_string(),
+            }
+            .into()),
+        }
+    }
+}
+
 // ==== Switch ====
 #[derive(Debug, Clone)]
 pub struct Switch {
@@ -414,6 +422,35 @@ impl Switch {
         }
     }
 
+    /// Initializes a network bridge representing the switch.
+    pub fn power_on(&mut self, runtime: &Runtime) -> NetResult<()> {
+        let name = self.name.as_str();
+
+        runtime.block_on(async {
+            let (connection, handle, _) = new_connection()
+                .map_err(|err| LinkError::ConnectionFailed { source: err })?;
+            tokio::spawn(connection);
+
+            let message = LinkBridge::new(name).up().build();
+            let request = handle.link().add(message);
+
+            request.execute().await.map_err(|e| {
+                NetError::BasicError(format!(
+                    "Failed to create bridge {name}: {e}",
+                ))
+            })?;
+
+            if let Ok(ifindex) = if_nametoindex(name) {
+                self.ifindex = Some(ifindex);
+                debug!(switch = %self.name, "powered on");
+            }
+
+            Ok(())
+        })
+    }
+}
+
+impl FromYamlConfig for Switch {
     /// Handles config that is in the form of:
     ///
     /// ```yaml
@@ -426,7 +463,7 @@ impl Switch {
     ///         - 2001:db8::/96
     /// ```
     /// converted into a yaml_rust2::yaml::Hash;
-    pub fn from_yaml_config(
+    fn from_yaml_config(
         switch_name: &str,
         switch_config: &Hash,
     ) -> NetResult<Self> {
@@ -473,33 +510,6 @@ impl Switch {
             }
             .into()),
         }
-    }
-
-    /// Initializes a network bridge representing the switch.
-    pub fn power_on(&mut self, runtime: &Runtime) -> NetResult<()> {
-        let name = self.name.as_str();
-
-        runtime.block_on(async {
-            let (connection, handle, _) = new_connection()
-                .map_err(|err| LinkError::ConnectionFailed { source: err })?;
-            tokio::spawn(connection);
-
-            let message = LinkBridge::new(name).up().build();
-            let request = handle.link().add(message);
-
-            request.execute().await.map_err(|e| {
-                NetError::BasicError(format!(
-                    "Failed to create bridge {name}: {e}",
-                ))
-            })?;
-
-            if let Ok(ifindex) = if_nametoindex(name) {
-                self.ifindex = Some(ifindex);
-                debug!(switch = %self.name, "powered on");
-            }
-
-            Ok(())
-        })
     }
 }
 

@@ -14,68 +14,52 @@ use yaml_rust2::YamlLoader;
 use yaml_rust2::yaml::{Hash, Yaml};
 
 use crate::NetResult;
-use crate::devices::{Link, Node, Router, Switch};
+use crate::devices::{FromYamlConfig, Link, Node, Router, Switch};
 use crate::error::{ConfigError, LinkError, NamespaceError, NetError};
 
-#[derive(Debug)]
-pub struct Topology {
-    // String holds the nodename(),
-    // Node holds the node object.
-    nodes: BTreeMap<String, Node>,
-    links: Vec<Link>,
-    runtime: Runtime,
-}
+// struct TopologyParser ====
 
-impl Topology {
-    pub fn new() -> NetResult<Self> {
-        Ok(Self {
-            nodes: BTreeMap::new(),
-            links: vec![],
-            runtime: tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|err| {
-                    NetError::BasicError(format!(
-                        "Failed to create tokio runtime: {err:?}"
-                    ))
-                })?,
-        })
-    }
+pub struct TopologyParser;
 
-    pub fn from_yaml_file(file: &mut File) -> NetResult<Self> {
+impl TopologyParser {
+    pub fn from_yaml_file(file: &mut File) -> NetResult<Topology> {
         let mut contents = String::new();
         let _ = file.read_to_string(&mut contents);
         Self::from_yaml_str(contents.as_str())
     }
 
-    pub fn from_yaml_str(yaml_str: &str) -> NetResult<Self> {
-        let mut topology = Self::new()?;
+    pub fn from_yaml_str(yaml_str: &str) -> NetResult<Topology> {
+        let mut topology = Topology::new()?;
         let yaml_content =
             YamlLoader::load_from_str(yaml_str).map_err(|err| {
                 NetError::ConfigError(ConfigError::YamlSyntax(err))
             })?;
 
         for yaml_group in yaml_content {
-            topology.parse_topology_config(&yaml_group)?;
+            Self::parse_topology_config(&yaml_group, &mut topology)?;
         }
         Ok(topology)
     }
 
-    pub fn parse_topology_config(&mut self, yaml_data: &Yaml) -> NetResult<()> {
+    pub fn parse_topology_config(
+        yaml_data: &Yaml,
+        topology: &mut Topology,
+    ) -> NetResult<()> {
         if let Yaml::Hash(topo_config_group) = yaml_data {
             // Fetch the routers.
             if let Some(routers_configs) =
                 topo_config_group.get(&Yaml::String(String::from("routers")))
             {
-                let routers = self.parse_router_configs(routers_configs)?;
+                let routers = Self::parse_router_configs(routers_configs)?;
                 for router in routers {
-                    // check if router exists
-                    if self.nodes.contains_key(&router.name) {
+                    // Check if router exists.
+                    if topology.nodes.contains_key(&router.name) {
                         return Err(
                             ConfigError::DuplicateNode(router.name).into()
                         );
                     }
-                    self.nodes
+                    topology
+                        .nodes
                         .insert(router.name.clone(), Node::Router(router));
                 }
             }
@@ -84,14 +68,15 @@ impl Topology {
             if let Some(switches_configs) =
                 topo_config_group.get(&Yaml::String(String::from("switches")))
             {
-                let switches = self.parse_switch_configs(switches_configs)?;
+                let switches = Self::parse_switch_configs(switches_configs)?;
                 for switch in switches {
-                    if self.nodes.contains_key(&switch.name) {
+                    if topology.nodes.contains_key(&switch.name) {
                         return Err(
                             ConfigError::DuplicateNode(switch.name).into()
                         );
                     }
-                    self.nodes
+                    topology
+                        .nodes
                         .insert(switch.name.clone(), Node::Switch(switch));
                 }
             }
@@ -100,28 +85,37 @@ impl Topology {
             if let Some(links_configs) =
                 topo_config_group.get(&Yaml::String(String::from("links")))
             {
-                let links = self.parse_links_configs(links_configs)?;
-                for link in links {
-                    if !self.nodes.contains_key(&link.src_device) {
+                let yaml_links = Self::parse_links_configs(links_configs)?;
+
+                for link in yaml_links {
+                    if !topology.nodes.contains_key(&link.src_device) {
                         return Err(
                             ConfigError::UnknownNode(link.src_device).into()
                         );
                     }
-                    if !self.nodes.contains_key(&link.dst_device) {
+
+                    if !topology.nodes.contains_key(&link.dst_device) {
                         return Err(
                             ConfigError::UnknownNode(link.dst_device).into()
                         );
                     }
 
-                    // check if link has already been configured.
-                    if self.link_exists(&link) {
-                        return Err(ConfigError::DuplicateLink {
-                            src: link.src(),
-                            dst: link.dst(),
+                    // Check if link has already been added to the links vector.
+                    for link2 in topology.links.as_slice() {
+                        if (link.src() == link2.src())
+                            && (link.dst() == link2.dst())
+                            || ((link.src() == link2.dst())
+                                && (link.dst() == link2.src()))
+                        {
+                            // Link exists.
+                            return Err(ConfigError::DuplicateLink {
+                                src: link.src(),
+                                dst: link.dst(),
+                            }
+                            .into());
                         }
-                        .into());
                     }
-                    self.links.push(link);
+                    topology.links.push(link);
                 }
             }
         }
@@ -129,7 +123,6 @@ impl Topology {
     }
 
     pub fn parse_router_configs(
-        &self,
         routers_config: &Yaml,
     ) -> NetResult<Vec<Router>> {
         let mut routers: Vec<Router> = vec![];
@@ -175,7 +168,6 @@ impl Topology {
     }
 
     pub fn parse_switch_configs(
-        &self,
         switches_configs: &Yaml,
     ) -> NetResult<Vec<Switch>> {
         let mut switches: Vec<Switch> = vec![];
@@ -222,10 +214,7 @@ impl Topology {
         Ok(switches)
     }
 
-    pub fn parse_links_configs(
-        &self,
-        links_configs: &Yaml,
-    ) -> NetResult<Vec<Link>> {
+    pub fn parse_links_configs(links_configs: &Yaml) -> NetResult<Vec<Link>> {
         let mut links: Vec<Link> = vec![];
         if let Yaml::Array(configs) = links_configs {
             for link_config in configs {
@@ -261,7 +250,7 @@ impl Topology {
         Ok(links)
     }
 
-    // Get field value from list.
+    // Get field value from Yaml list.
     fn get_string_field(config: &Hash, field: &str) -> NetResult<String> {
         let field_value = config
             .get(&Yaml::String(field.to_string()))
@@ -276,16 +265,33 @@ impl Topology {
             .into()),
         }
     }
+}
 
-    pub fn link_exists(&self, link: &Link) -> bool {
-        for link2 in &self.links {
-            if (link.src() == link2.src()) && (link.dst() == link2.dst())
-                || ((link.src() == link2.dst()) && (link.dst() == link2.src()))
-            {
-                return true;
-            }
-        }
-        false
+// ==== struct Topology ====
+
+#[derive(Debug)]
+pub struct Topology {
+    // String holds the nodename(),
+    // Node holds the node object.
+    nodes: BTreeMap<String, Node>,
+    links: Vec<Link>,
+    runtime: Runtime,
+}
+
+impl Topology {
+    pub fn new() -> NetResult<Self> {
+        Ok(Self {
+            nodes: BTreeMap::new(),
+            links: vec![],
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|err| {
+                    NetError::BasicError(format!(
+                        "Failed to create tokio runtime: {err:?}"
+                    ))
+                })?,
+        })
     }
 
     /// We power on the switches.

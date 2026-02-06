@@ -4,7 +4,7 @@ use std::os::fd::AsFd;
 
 use clap::{Arg, ArgMatches, command};
 use netgen::error::{ConfigError, NamespaceError, NetError};
-use netgen::topology::Topology;
+use netgen::topology::{Topology, TopologyParser};
 use netgen::{
     DEVICES_NS_DIR, NS_DIR, NetResult, PID_FILE, kill_process, mount_device,
 };
@@ -192,7 +192,7 @@ fn parse_config_args(config_args: &ArgMatches) -> NetResult<Topology> {
                     source: err,
                 }
             })?;
-            let topology = Topology::from_yaml_file(&mut topo_file)?;
+            let topology = TopologyParser::from_yaml_file(&mut topo_file)?;
             Ok(topology)
         }
         None => Err(ConfigError::TopologyFileMissing.into()),
