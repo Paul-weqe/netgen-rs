@@ -127,7 +127,7 @@ fn add_switches_and_links(topology: &mut Topology) -> NetResult<()> {
     match fork {
         Ok(ForkResult::Child) => {
             // Enter the main namespace.
-            let main_net_path = format!("/tmp/netgen-rs/ns/main/net");
+            let main_net_path = "/tmp/netgen-rs/ns/main/net".to_string();
             let main_net_file =
                 File::open(main_net_path.as_str()).map_err(|err| {
                     NetError::BasicError(format!(

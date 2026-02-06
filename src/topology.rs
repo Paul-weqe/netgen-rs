@@ -137,7 +137,7 @@ impl Topology {
                         Yaml::String(name) => name,
                         _ => {
                             return Err(ConfigError::IncorrectType {
-                                field: format!("routers.router[name??]"),
+                                field: "routers.router[name??]".to_string(),
                                 expected: "string".to_string(),
                             }
                             .into());
@@ -148,9 +148,8 @@ impl Topology {
                         Yaml::Hash(router_config) => router_config,
                         _ => {
                             return Err(ConfigError::IncorrectType {
-                                field: format!(
-                                    "routers.router[router_name][config??]"
-                                ),
+                                field: "routers.router[router_name][config??]"
+                                    .to_string(),
                                 expected: "hash".to_string(),
                             }
                             .into());
@@ -158,7 +157,7 @@ impl Topology {
                     };
 
                     let router =
-                        Router::from_yaml_config(&router_name, router_config)?;
+                        Router::from_yaml_config(router_name, router_config)?;
                     routers.push(router);
                 }
                 Ok(routers)
@@ -183,7 +182,7 @@ impl Topology {
                         Yaml::String(name) => name,
                         _ => {
                             return Err(ConfigError::IncorrectType {
-                                field: format!("switches.switch[name??]"),
+                                field: "switches.switch[name??]".to_string(),
                                 expected: "string".to_string(),
                             }
                             .into());
@@ -210,7 +209,7 @@ impl Topology {
             }
             _ => {
                 return Err(ConfigError::IncorrectType {
-                    field: format!("switches[config??]"),
+                    field: "switches[config??]".to_string(),
                     expected: "hash".to_string(),
                 }
                 .into());
@@ -229,19 +228,19 @@ impl Topology {
                 if let Yaml::Hash(link_config) = link_config {
                     let link = Link {
                         src_device: Self::get_string_field(
-                            &link_config,
+                            link_config,
                             "src-device",
                         )?,
                         src_iface: Self::get_string_field(
-                            &link_config,
+                            link_config,
                             "src-iface",
                         )?,
                         dst_device: Self::get_string_field(
-                            &link_config,
+                            link_config,
                             "dst-device",
                         )?,
                         dst_iface: Self::get_string_field(
-                            &link_config,
+                            link_config,
                             "dst-iface",
                         )?,
                     };
@@ -250,7 +249,7 @@ impl Topology {
             }
         } else {
             return Err(ConfigError::IncorrectType {
-                field: format!("links[config??]"),
+                field: "links[config??]".to_string(),
                 expected: "array".to_string(),
             }
             .into());
@@ -343,7 +342,7 @@ impl Topology {
 
         // create links on routers.
         for link in &self.links {
-            self.create_link(&link)?;
+            self.create_link(link)?;
         }
 
         // Add addresss for links in the router nodes.

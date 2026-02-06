@@ -45,7 +45,7 @@ pub fn mount_device(
 
     let main_net_path = format!("/proc/{}/ns/net", pid.as_raw());
     let main_net_file = File::open(main_net_path.as_str())
-        .expect(format!("unable to open file {:?}", main_net_path).as_str());
+        .unwrap_or_else(|_| panic!("unable to open file {:?}", main_net_path));
 
     setns(main_net_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
         |source| {
@@ -65,9 +65,9 @@ fn create_ns(device: &DeviceDetails) -> NetResult<()> {
         })
     })?;
 
-    match File::create(&device.netns_path()) {
+    match File::create(device.netns_path()) {
         Ok(_) => {
-            let proc_ns_path = format!("/proc/self/ns/net");
+            let proc_ns_path = "/proc/self/ns/net".to_string();
             let net_path = &device.netns_path();
             let target_path = Path::new(net_path);
 
@@ -140,7 +140,7 @@ impl DeviceDetails {
                 home_path: format!("{DEVICES_NS_DIR}/{name}"),
             },
             None => Self {
-                name: format!("main"),
+                name: "main".to_string(),
                 home_path: format!("{NS_DIR}/main"),
             },
         }

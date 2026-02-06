@@ -27,13 +27,10 @@ impl Interface {
     async fn add_addresses(&self, handle: &Handle) -> NetResult<()> {
         let ifindex = if_nametoindex(self.name.as_str()).map_err(|source| {
             error!("Interface not found");
-            NetError::LinkError(
-                LinkError::NoInterface {
-                    iface: self.name.clone(),
-                    source,
-                }
-                .into(),
-            )
+            NetError::LinkError(LinkError::NoInterface {
+                iface: self.name.clone(),
+                source,
+            })
         })?;
 
         for addr in &self.addresses {
@@ -474,7 +471,7 @@ impl Switch {
             })?;
 
             if let Ok(ifindex) = if_nametoindex(name) {
-                self.ifindex = Some(ifindex as u32);
+                self.ifindex = Some(ifindex);
                 debug!(switch = %self.name, "powered on");
             }
 
