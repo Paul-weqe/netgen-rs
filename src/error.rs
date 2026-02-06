@@ -1,32 +1,6 @@
-use std::io::Error as IoError;
-
+use ipnetwork::IpNetwork;
 use thiserror::Error as ThisError;
 use yaml_rust2::scanner::ScanError;
-
-#[derive(Debug)]
-pub enum Error {
-    GeneralError(String),
-    IoError(IoError),
-    ScanError(ScanError),
-
-    // 1st &str is name of field,2nd &str is type that has been configured
-    IncorrectYamlType(String),
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::GeneralError(error) => write!(f, "{}", error.as_str()),
-            Self::IoError(error) => std::fmt::Display::fmt(error, f),
-            Self::ScanError(error) => std::fmt::Display::fmt(error, f),
-            Self::IncorrectYamlType(name) => {
-                write!(f, "Incorrect yaml type for field \"{name}\".")
-            }
-        }
-    }
-}
-
-impl std::error::Error for Error {}
 
 #[derive(Debug, ThisError)]
 pub enum NetError {
@@ -38,6 +12,9 @@ pub enum NetError {
 
     #[error(transparent)]
     NamespaceError(#[from] NamespaceError),
+
+    #[error(transparent)]
+    LinkError(#[from] LinkError),
 }
 
 #[derive(Debug, ThisError)]
@@ -138,5 +115,33 @@ pub enum NamespaceError {
     Unshare {
         #[source]
         source: nix::Error,
+    },
+}
+
+#[derive(Debug, ThisError)]
+pub enum LinkError {
+    #[error("Interface {iface} not found: {source}")]
+    NoInterface {
+        iface: String,
+        #[source]
+        source: nix::Error,
+    },
+
+    #[error("Unable to add address {addr}: {source}")]
+    AddressAdd {
+        iface: String,
+        addr: IpNetwork,
+        #[source]
+        source: rtnetlink::Error,
+    },
+
+    #[error(
+        "Unable to change interface:{ifindex} on device:{device} state to up: {source}"
+    )]
+    ChangeStateUp {
+        device: String,
+        ifindex: u32,
+        #[source]
+        source: rtnetlink::Error,
     },
 }

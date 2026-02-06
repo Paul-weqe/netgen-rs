@@ -14,7 +14,6 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::{ForkResult, Pid, fork, pause};
 use tracing::error;
 
-pub type Result<T> = std::result::Result<T, error::Error>;
 pub type NetResult<T> = std::result::Result<T, error::NetError>;
 
 pub const NS_DIR: &str = "/tmp/netgen-rs/ns";

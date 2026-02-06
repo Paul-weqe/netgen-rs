@@ -13,7 +13,7 @@ use tracing::{debug, error, error_span};
 use yaml_rust2::Yaml;
 use yaml_rust2::yaml::Hash;
 
-use crate::error::{ConfigError, NetError};
+use crate::error::{ConfigError, LinkError, NamespaceError, NetError};
 use crate::{DEVICES_NS_DIR, NS_DIR, NetResult, kill_process, mount_device};
 
 // ==== Interface ====
@@ -25,19 +25,27 @@ pub struct Interface {
 
 impl Interface {
     async fn add_addresses(&self, handle: &Handle) -> NetResult<()> {
-        let ifindex = if_nametoindex(self.name.as_str()).map_err(|_| {
+        let ifindex = if_nametoindex(self.name.as_str()).map_err(|source| {
             error!("Interface not found");
-            let err_msg = format!("Interface {:?} not found", self.name);
-            NetError::BasicError(err_msg)
+            NetError::LinkError(
+                LinkError::NoInterface {
+                    iface: self.name.clone(),
+                    source,
+                }
+                .into(),
+            )
         })?;
 
         for addr in &self.addresses {
             let request =
                 handle.address().add(ifindex, addr.ip(), addr.prefix());
-            request.execute().await.map_err(|_| {
+            request.execute().await.map_err(|err| {
                 error!(addr=%addr ,"Unable to add address");
-                let err_msg = format!("Unable to add address {addr}");
-                NetError::BasicError(err_msg)
+                NetError::LinkError(LinkError::AddressAdd {
+                    iface: self.name.clone(),
+                    addr: *addr,
+                    source: err,
+                })
             })?;
         }
         Ok(())
@@ -225,7 +233,11 @@ impl Router {
                     error!(router=%router_name, ifindex=%ifindex,
                         "problem bringing up"
                     );
-                    NetError::BasicError(format!("{err:?}"))
+                    NetError::LinkError(LinkError::ChangeStateUp {
+                        device: router_name.clone(),
+                        ifindex,
+                        source: err,
+                    })
                 })?;
                 Ok::<(), NetError>(())
             })
@@ -291,11 +303,10 @@ impl Router {
 
                 setns(ns_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
                     |err| {
-                        let err = format!(
-                            "Unable to enter into {} namespace {:#?}",
-                            self.name, err
-                        );
-                        NetError::BasicError(err)
+                        NetError::NamespaceError(NamespaceError::Entry {
+                            device: self.name.clone(),
+                            source: err,
+                        })
                     },
                 )?;
 
@@ -304,21 +315,26 @@ impl Router {
                 // Go back to the main namespace.
                 let main_namespace_path = format!("{NS_DIR}/main/net");
 
-                if let Ok(main_file) = File::open(main_namespace_path.as_str())
-                    && let Ok(_) =
-                        setns(main_file.as_fd(), CloneFlags::CLONE_NEWNET)
-                {
-                    Ok(result)
-                } else {
-                    Err(NetError::BasicError(
-                        "unable to move back to main namespace".to_string(),
-                    ))
-                }
+                let main_file =
+                    File::open(&main_namespace_path).map_err(|err| {
+                        NetError::BasicError(format!(
+                            "Unable to open file {main_namespace_path}: {err:?}"
+                        ))
+                    })?;
+
+                setns(main_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
+                    |err| {
+                        NetError::NamespaceError(NamespaceError::ReturnToMain {
+                            source: err,
+                        })
+                    },
+                )?;
+                Ok(result)
             }
-            None => Err(NetError::BasicError(format!(
-                "namespace fd {:?} not found",
-                self.file_path
-            ))),
+            None => Err(NamespaceError::NotFound {
+                device: self.name.clone(),
+            }
+            .into()),
         }
     }
 
