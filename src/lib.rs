@@ -26,7 +26,12 @@ pub fn mount_device(
     pid: Pid,
 ) -> NetResult<String> {
     let device = DeviceDetails::new(device_name);
-    unshare(CloneFlags::CLONE_NEWNET).unwrap();
+    unshare(CloneFlags::CLONE_NEWNET).map_err(|err| {
+        NetError::NamespaceError(NamespaceError::Unshare {
+            ns_name: device.name.clone(),
+            source: err,
+        })
+    })?;
 
     match unsafe { fork() } {
         Ok(ForkResult::Child) => {
@@ -44,8 +49,12 @@ pub fn mount_device(
     }
 
     let main_net_path = format!("/proc/{}/ns/net", pid.as_raw());
-    let main_net_file = File::open(main_net_path.as_str())
-        .unwrap_or_else(|_| panic!("unable to open file {:?}", main_net_path));
+    let main_net_file = File::open(main_net_path.as_str()).map_err(|err| {
+        NamespaceError::FileOpen {
+            path: main_net_path.clone(),
+            source: err,
+        }
+    })?;
 
     setns(main_net_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
         |source| {
@@ -112,7 +121,11 @@ pub fn kill_process(pid_file: &str) -> NetResult<()> {
     if let Ok(file) = OpenOptions::new().read(true).open(pid_file) {
         let mut reader = std::io::BufReader::new(file);
         let mut pid = String::new();
-        let _ = reader.read_line(&mut pid).unwrap();
+        let _ = reader.read_line(&mut pid).map_err(|err| {
+            NetError::BasicError(format!(
+                "Unable to read file:{pid_file} : {err:?}"
+            ))
+        })?;
 
         if let Ok(pid) = pid.trim().parse::<i32>() {
             kill(Pid::from_raw(pid), Signal::SIGKILL).map_err(|err| {

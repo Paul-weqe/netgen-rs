@@ -59,7 +59,7 @@ fn main() -> NetResult<()> {
         }
         Some(("stop", stop_args)) => {
             if let Ok(mut topology) = parse_config_args(stop_args) {
-                topology.power_off();
+                topology.power_off()?;
             }
 
             // Kill the main process.
@@ -142,7 +142,7 @@ fn add_switches_and_links(topology: &mut Topology) -> NetResult<()> {
                     ))
                 })?;
             topology.power_switches_on()?;
-            topology.setup_links().unwrap();
+            topology.setup_links()?;
         }
         Ok(ForkResult::Parent { child }) => {
             waitpid(child, None).map_err(|err| {
@@ -186,8 +186,13 @@ fn config_args() -> Vec<Arg> {
 fn parse_config_args(config_args: &ArgMatches) -> NetResult<Topology> {
     match config_args.get_one::<String>("Topo File") {
         Some(topo_file) => {
-            let mut topo_file = File::open(topo_file).unwrap();
-            let topology = Topology::from_yaml_file(&mut topo_file).unwrap();
+            let mut topo_file = File::open(topo_file).map_err(|err| {
+                NamespaceError::FileOpen {
+                    path: topo_file.clone(),
+                    source: err,
+                }
+            })?;
+            let topology = Topology::from_yaml_file(&mut topo_file)?;
             Ok(topology)
         }
         None => Err(ConfigError::TopologyFileMissing.into()),

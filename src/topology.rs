@@ -15,7 +15,7 @@ use yaml_rust2::yaml::{Hash, Yaml};
 
 use crate::NetResult;
 use crate::devices::{Link, Node, Router, Switch};
-use crate::error::{ConfigError, NetError};
+use crate::error::{ConfigError, LinkError, NamespaceError, NetError};
 
 #[derive(Debug)]
 pub struct Topology {
@@ -27,15 +27,19 @@ pub struct Topology {
 }
 
 impl Topology {
-    pub fn new() -> Self {
-        Self {
+    pub fn new() -> NetResult<Self> {
+        Ok(Self {
             nodes: BTreeMap::new(),
             links: vec![],
             runtime: tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .unwrap(),
-        }
+                .map_err(|err| {
+                    NetError::BasicError(format!(
+                        "Failed to create tokio runtime: {err:?}"
+                    ))
+                })?,
+        })
     }
 
     pub fn from_yaml_file(file: &mut File) -> NetResult<Self> {
@@ -45,7 +49,7 @@ impl Topology {
     }
 
     pub fn from_yaml_str(yaml_str: &str) -> NetResult<Self> {
-        let mut topology = Self::new();
+        let mut topology = Self::new()?;
         let yaml_content =
             YamlLoader::load_from_str(yaml_str).map_err(|err| {
                 NetError::ConfigError(ConfigError::YamlSyntax(err))
@@ -322,13 +326,14 @@ impl Topology {
     /// For switches, this means deleting the bridged interface
     ///
     /// For routers, this is deleting the respective namespaces
-    pub fn power_off(&mut self) {
+    pub fn power_off(&mut self) -> NetResult<()> {
         let power_off_span = debug_span!("net-stop");
         let _span_guard = power_off_span.enter();
         // Powers off all the nodes
         for node in self.nodes.values_mut() {
-            node.power_off();
+            node.power_off()?;
         }
+        Ok(())
     }
 
     pub fn setup_links(&self) -> NetResult<()> {
@@ -382,14 +387,23 @@ impl Topology {
             .collect();
         let node2_link = format!("eth-{link_name}");
         runtime.block_on(async {
-            let (connection, handle, _) = new_connection().unwrap();
+            let (connection, handle, _) = new_connection()
+                .map_err(|err| LinkError::ConnectionFailed { source: err })?;
             tokio::spawn(connection);
             let request = handle.link().add(
                 LinkVeth::new(node1_link.as_str(), node2_link.as_str()).build(),
             );
+
             //request.message_mut().header.flags.push(LinkFlag::Up);
-            request.execute().await.unwrap();
-        });
+            request.execute().await.map_err(|err| {
+                LinkError::ExecuteFailed {
+                    operation: "create_link".to_string(),
+                    source: err,
+                }
+            })?;
+
+            Ok::<(), NetError>(())
+        })?;
         if let Some(src_node) = self.nodes.get(&link.src_device)
             && let Some(dst_node) = self.nodes.get(&link.dst_device)
         {
@@ -410,26 +424,43 @@ impl Topology {
     ) -> NetResult<()> {
         let runtime = &self.runtime;
         runtime.block_on(async {
-            let (connection, handle, _) = new_connection().unwrap();
+            let (connection, handle, _) = new_connection()
+                .map_err(|err| LinkError::ConnectionFailed { source: err })?;
             tokio::spawn(connection);
             match node {
                 Node::Router(router) => {
                     if let Ok(index) =
                         if_nametoindex(current_link_name.as_str())
                         && let Some(file_path) = &router.file_path
-                        && let Ok(file) = File::open(file_path)
                     {
+                        let file = File::open(file_path).map_err(|err| {
+                            NamespaceError::FileOpen {
+                                path: file_path.clone(),
+                                source: err,
+                            }
+                        })?;
                         let message = LinkUnspec::new_with_index(index)
                             .setns_by_fd(file.as_raw_fd())
                             .build();
                         // move router device to said namespace
-                        handle.link().set(message).execute().await.unwrap();
+                        handle.link().set(message).execute().await.map_err(
+                            |err| LinkError::ExecuteFailed {
+                                operation:
+                                    "attach-link->move-link-to-router-namespace"
+                                        .to_string(),
+                                source: err,
+                            },
+                        )?;
 
                         // rename the interface to it's proper name
                         router
                             .in_ns(move || async move {
-                                let (conn, handle, _) =
-                                    new_connection().unwrap();
+                                let (conn, handle, _) = new_connection()
+                                    .map_err(|err| {
+                                        LinkError::ConnectionFailed {
+                                            source: err,
+                                        }
+                                    })?;
                                 tokio::spawn(conn);
 
                                 let message = LinkUnspec::new_with_index(index)
@@ -438,13 +469,24 @@ impl Topology {
                                     .build();
                                 // Bring the interface up and give it the proper
                                 // name.
-                                if let Err(err) =
-                                    handle.link().set(message).execute().await
-                                {
-                                    error!(error = %err, "error coming up");
-                                }
+                                handle
+                                    .link()
+                                    .set(message)
+                                    .execute()
+                                    .await
+                                    .map_err(|err| {
+                                        LinkError::ExecuteFailed {
+                                        operation:
+                                            "attach-link->bring-interface-up"
+                                                .to_string(),
+                                        source: err,
+                                    }
+                                    })?;
+                                Ok::<(), NetError>(())
                             })
-                            .await?;
+                            .await??;
+                        // Above: one '?' for the inner method, one for the
+                        // 'in_ns' method.
                     }
                 }
                 Node::Switch(switch) => {
@@ -475,11 +517,5 @@ impl Topology {
             }
             Ok(())
         })
-    }
-}
-
-impl Default for Topology {
-    fn default() -> Self {
-        Self::new()
     }
 }

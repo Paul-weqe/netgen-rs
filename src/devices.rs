@@ -136,11 +136,11 @@ pub(crate) enum Node {
 }
 
 impl Node {
-    pub fn power_off(&mut self) {
-        match self {
-            Self::Router(router) => router.power_off(),
-            Self::Switch(switch) => switch.power_off(),
+    pub fn power_off(&mut self) -> NetResult<()> {
+        if let Self::Router(router) = self {
+            router.power_off()?;
         }
+        Ok(())
     }
 }
 
@@ -221,7 +221,11 @@ impl Router {
         let router_name = self.name.clone();
         runtime.block_on(async {
             self.in_ns(move || async move {
-                let (connection, handle, _) = new_connection().unwrap();
+                let (connection, handle, _) =
+                    new_connection().map_err(|err| {
+                        LinkError::ConnectionFailed { source: err }
+                    })?;
+
                 tokio::spawn(connection);
 
                 let message = LinkUnspec::new_with_index(ifindex).up().build();
@@ -243,24 +247,35 @@ impl Router {
     }
 
     /// Deletes the namespace created by the Router (if it exists)
-    pub fn power_off(&mut self) {
+    pub fn power_off(&mut self) -> NetResult<()> {
         let device_dir = format!("{DEVICES_NS_DIR}/{}", self.name);
-        kill_process(format!("{device_dir}/.pid").as_str()).unwrap();
+        kill_process(format!("{device_dir}/.pid").as_str())?;
 
         // create the file that will be hooked to the router's namespace.
         let ns_path = format!("{device_dir}/net");
-        if let Err(err) = umount(ns_path.as_str()) {
-            error!(router = %self.name, error = %err,"issue unmounting namespace");
-            return;
-        }
+
+        umount(ns_path.as_str()).map_err(|err| {
+            error!(
+                router = %self.name,
+                error = %err,"issue unmounting namespace"
+            );
+            NamespaceError::Unmount {
+                path: ns_path.clone(),
+                source: err,
+            }
+        })?;
 
         // Remove the files.
-        if let Err(err) = remove_dir_all(device_dir.as_str()) {
+        remove_dir_all(&device_dir).map_err(|err| {
             error!(router = %self.name, error = %err, dir=%device_dir,
-                "problem removing directory");
-        } else {
-            debug!(router = %self.name, "deleted");
-        }
+                    "problem removing directory");
+            NetError::BasicError(format!(
+                "Unable to remove directory {device_dir}: {err:?}"
+            ))
+        })?;
+
+        debug!(router = %self.name, "deleted");
+        Ok(())
     }
 
     /// Executes instructions inside the
@@ -273,7 +288,7 @@ impl Router {
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let router = Router::new("r1").await.unwrap();
+    ///     let router = Router::new("r1");
     ///     router
     ///         .in_ns(move || async move {
     ///             let output = Command::new("ip").args(vec!["link"]).output();
@@ -296,14 +311,18 @@ impl Router {
         match &self.file_path {
             Some(file_path) => {
                 // Move into the Router namespace.
-                let ns_file = File::open(file_path.as_str()).unwrap();
+                let ns_file =
+                    File::open(file_path.as_str()).map_err(|err| {
+                        NamespaceError::FileOpen {
+                            path: file_path.clone(),
+                            source: err,
+                        }
+                    })?;
 
                 setns(ns_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
-                    |err| {
-                        NetError::NamespaceError(NamespaceError::Entry {
-                            device: self.name.clone(),
-                            source: err,
-                        })
+                    |err| NamespaceError::Entry {
+                        device: self.name.clone(),
+                        source: err,
                     },
                 )?;
 
@@ -359,7 +378,10 @@ impl Router {
 
         runtime.block_on(async {
             self.in_ns(move || async move {
-                let (connection, handle, _) = new_connection().unwrap();
+                let (connection, handle, _) =
+                    new_connection().map_err(|err| {
+                        LinkError::ConnectionFailed { source: err }
+                    })?;
                 tokio::spawn(connection);
                 for iface in interfaces {
                     let iface_name = iface.name.clone();
@@ -458,7 +480,8 @@ impl Switch {
         let name = self.name.as_str();
 
         runtime.block_on(async {
-            let (connection, handle, _) = new_connection().unwrap();
+            let (connection, handle, _) = new_connection()
+                .map_err(|err| LinkError::ConnectionFailed { source: err })?;
             tokio::spawn(connection);
 
             let message = LinkBridge::new(name).up().build();
@@ -477,11 +500,6 @@ impl Switch {
 
             Ok(())
         })
-    }
-
-    /// Switch does not run in dedicated namespace thus no need to unmount.
-    pub fn power_off(&mut self) {
-        // Powering off...I guess.
     }
 }
 

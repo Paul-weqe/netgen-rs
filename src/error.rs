@@ -111,10 +111,18 @@ pub enum NamespaceError {
         source: nix::Error,
     },
 
-    #[error("Failed to create new network namespace: {source}")]
+    #[error("Failed to create new network namespace {ns_name}: {source}")]
     Unshare {
+        ns_name: String,
         #[source]
         source: nix::Error,
+    },
+
+    #[error("Failed to open namespace file {path}: {source}")]
+    FileOpen {
+        path: String,
+        #[source]
+        source: std::io::Error,
     },
 }
 
@@ -141,6 +149,19 @@ pub enum LinkError {
     ChangeStateUp {
         device: String,
         ifindex: u32,
+        #[source]
+        source: rtnetlink::Error,
+    },
+
+    #[error("Unable to create a new netlink connection: {source}")]
+    ConnectionFailed {
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("Failed to execute netlink operation '{operation}': {source}")]
+    ExecuteFailed {
+        operation: String,
         #[source]
         source: rtnetlink::Error,
     },
