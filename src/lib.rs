@@ -7,10 +7,12 @@ use std::io::{BufRead, Write};
 use std::os::fd::AsFd;
 use std::path::Path;
 
+use error::{NamespaceError, NetError};
 use nix::mount::{MsFlags, mount};
 use nix::sched::{CloneFlags, setns, unshare};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::{ForkResult, Pid, fork, pause};
+use tracing::error;
 
 pub type Result<T> = std::result::Result<T, error::Error>;
 pub type NetResult<T> = std::result::Result<T, error::NetError>;
@@ -20,7 +22,10 @@ pub const DEVICES_NS_DIR: &str = "/tmp/netgen-rs/ns/devices";
 pub const PID_FILE: &str = "/tmp/netgen-rs/ns/main/.pid";
 
 // If we are trying to mount the main pid, we leave device_name as None
-pub fn mount_device(device_name: Option<String>, pid: Pid) -> Result<String> {
+pub fn mount_device(
+    device_name: Option<String>,
+    pid: Pid,
+) -> NetResult<String> {
     let device = DeviceDetails::new(device_name);
     unshare(CloneFlags::CLONE_NEWNET).unwrap();
 
@@ -32,7 +37,10 @@ pub fn mount_device(device_name: Option<String>, pid: Pid) -> Result<String> {
             // Waiting for child
         }
         Err(err) => {
-            println!("unable to create a second child fork -> {err:?}")
+            error!(
+                device = %device.name,
+                "unable to create a second child fork: {err:?}"
+            );
         }
     }
 
@@ -40,23 +48,22 @@ pub fn mount_device(device_name: Option<String>, pid: Pid) -> Result<String> {
     let main_net_file = File::open(main_net_path.as_str())
         .expect(format!("unable to open file {:?}", main_net_path).as_str());
 
-    setns(main_net_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(|err| {
-        error::Error::GeneralError(format!(
-            "unable to move back to main namespace -> {err:?}"
-        ))
-    })?;
+    setns(main_net_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
+        |source| {
+            NetError::NamespaceError(NamespaceError::ReturnToMain { source })
+        },
+    )?;
 
     //Go back to main namespace
     Ok(device.netns_path())
 }
 
-fn create_ns(device: &DeviceDetails) -> Result<()> {
+fn create_ns(device: &DeviceDetails) -> NetResult<()> {
     create_dir_all(&device.home_path).map_err(|e| {
-        error::Error::GeneralError(format!(
-            "unable to create namespace directory {}\n{}",
-            &device.home_path,
-            e.to_string()
-        ))
+        NetError::NamespaceError(NamespaceError::PathCreation {
+            path: device.home_path.clone(),
+            source: e,
+        })
     })?;
 
     match File::create(&device.netns_path()) {
@@ -73,10 +80,11 @@ fn create_ns(device: &DeviceDetails) -> Result<()> {
                 None::<&str>,
             )
             .map_err(|err| {
-                error::Error::GeneralError(format!(
-                    "unable to mound netns for {} on path -> {err:?}",
-                    &device.name
-                ))
+                NetError::NamespaceError(NamespaceError::Mount {
+                    ns_type: String::from("network"),
+                    device: device.name.clone(),
+                    source: err,
+                })
             })?;
 
             // Path to the .pid file for the namespace.
@@ -89,7 +97,7 @@ fn create_ns(device: &DeviceDetails) -> Result<()> {
             pause();
         }
         Err(err) => {
-            return Err(error::Error::GeneralError(format!(
+            return Err(NetError::BasicError(format!(
                 "unable to create path {} -> {err:?}",
                 &device.netns_path()
             )));
@@ -100,7 +108,7 @@ fn create_ns(device: &DeviceDetails) -> Result<()> {
 
 // Kills the process specified in the file.
 // Mostly a .pid file.
-pub fn kill_process(pid_file: &str) -> Result<()> {
+pub fn kill_process(pid_file: &str) -> NetResult<()> {
     // Kills all the running plugin PIDs.
     if let Ok(file) = OpenOptions::new().read(true).open(pid_file) {
         let mut reader = std::io::BufReader::new(file);
@@ -108,11 +116,17 @@ pub fn kill_process(pid_file: &str) -> Result<()> {
         let _ = reader.read_line(&mut pid).unwrap();
 
         if let Ok(pid) = pid.trim().parse::<i32>() {
-            kill(Pid::from_raw(pid), Signal::SIGKILL).unwrap();
+            kill(Pid::from_raw(pid), Signal::SIGKILL).map_err(|err| {
+                NetError::BasicError(format!(
+                    "Issue killing process PID {pid} : {err:?}"
+                ))
+            })?;
         }
     }
     Ok(())
 }
+
+// ==== struct DeviceDetails ====
 
 pub struct DeviceDetails {
     pub name: String,

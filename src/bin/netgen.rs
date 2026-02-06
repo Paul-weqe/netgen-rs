@@ -3,10 +3,10 @@ use std::io::Write;
 use std::os::fd::AsFd;
 
 use clap::{Arg, ArgMatches, command};
-use netgen::error::Error;
+use netgen::error::{ConfigError, NamespaceError, NetError};
 use netgen::topology::Topology;
 use netgen::{
-    DEVICES_NS_DIR, NS_DIR, PID_FILE, Result, kill_process, mount_device,
+    DEVICES_NS_DIR, NS_DIR, NetResult, PID_FILE, kill_process, mount_device,
 };
 use nix::mount::umount;
 use nix::sched::{CloneFlags, setns};
@@ -17,12 +17,8 @@ use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::Registry;
 
-fn main() -> Result<()> {
+fn main() -> NetResult<()> {
     init_tracing();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
     let app_match = command!("netgen")
         .subcommand(
             command!("start")
@@ -40,7 +36,7 @@ fn main() -> Result<()> {
         Some(("start", start_args)) => {
             // If the PID file exists, then there is a netgen instance already running.
             if File::open(PID_FILE).is_ok() {
-                return Err(Error::GeneralError(String::from(
+                return Err(NetError::BasicError(String::from(
                     "topology is currently running. Consider running 'netgen stop -t my-topo.yml' before starting again",
                 )));
             }
@@ -49,9 +45,8 @@ fn main() -> Result<()> {
 
             // Create the directory storing our namespaces if it doesn't exists
             let _ = fs::create_dir_all(DEVICES_NS_DIR);
-            let mut topology =
-                runtime.block_on(async { parse_config_args(start_args) })?;
 
+            let mut topology = parse_config_args(start_args)?;
             create_routers(&mut topology)?;
 
             // Check if this is the child process.
@@ -88,13 +83,14 @@ fn main() -> Result<()> {
 }
 
 // Powers on all the devices in the topology.
-fn create_routers(topology: &mut Topology) -> Result<()> {
+fn create_routers(topology: &mut Topology) -> NetResult<()> {
     let fork = unsafe { fork() };
 
     // Fork for creating the devices.
     match fork {
         Ok(ForkResult::Child) => {
             let pid = Pid::this();
+
             let _ = mount_device(None, pid)?;
 
             if let Ok(mut f) = File::create(PID_FILE) {
@@ -107,22 +103,25 @@ fn create_routers(topology: &mut Topology) -> Result<()> {
         }
         Ok(ForkResult::Parent { child }) => {
             waitpid(child, None).map_err(|err| {
-                Error::GeneralError(format!(
-                    "problem while waiting for create_routers fork -> {err:?}"
-                ))
+                NetError::NamespaceError(NamespaceError::Fork {
+                    fork_function: String::from("create_routers"),
+                    source: err,
+                })
             })?;
         }
         Err(err) => {
-            return Err(Error::GeneralError(format!(
-                "problem intiializing create_routers fork -> {err:?}"
-            )));
+            return Err(NamespaceError::Fork {
+                fork_function: String::from("create_routers"),
+                source: err,
+            }
+            .into());
         }
     }
     Ok(())
 }
 
 // Adds links to all the devices that have been created.
-fn add_switches_and_links(topology: &mut Topology) -> Result<()> {
+fn add_switches_and_links(topology: &mut Topology) -> NetResult<()> {
     let fork = unsafe { fork() };
 
     match fork {
@@ -131,31 +130,34 @@ fn add_switches_and_links(topology: &mut Topology) -> Result<()> {
             let main_net_path = format!("/tmp/netgen-rs/ns/main/net");
             let main_net_file =
                 File::open(main_net_path.as_str()).map_err(|err| {
-                    Error::GeneralError(format!(
-                        "error opening main {main_net_path} -> {err:?}"
+                    NetError::BasicError(format!(
+                        "Error opening main {main_net_path} -> {err:?}"
                     ))
                 })?;
 
             setns(main_net_file.as_fd(), CloneFlags::CLONE_NEWNET)
                 .map_err(|err| {
-                    Error::GeneralError(format!(
-                        "problem moving into main namespace in add_device_links -> {err:?}"
+                    NetError::BasicError(format!(
+                        "Problem moving into main namespace in add_device_links -> {err:?}"
                     ))
                 })?;
             topology.power_switches_on()?;
-            topology.setup_links()?;
+            topology.setup_links().unwrap();
         }
         Ok(ForkResult::Parent { child }) => {
             waitpid(child, None).map_err(|err| {
-                Error::GeneralError(format!(
-                    "problem while waiting for add_device_links fork -> {err:?}"
-                ))
+                NetError::NamespaceError(NamespaceError::Fork {
+                    fork_function: String::from("add_device_links"),
+                    source: err,
+                })
             })?;
         }
         Err(err) => {
-            return Err(Error::GeneralError(format!(
-                "problem initializing add_device_links fork -> {err:?}"
-            )));
+            return Err(NamespaceError::Fork {
+                fork_function: String::from("add_device_links"),
+                source: err,
+            }
+            .into());
         }
     }
     Ok(())
@@ -181,17 +183,13 @@ fn config_args() -> Vec<Arg> {
     ]
 }
 
-fn parse_config_args(config_args: &ArgMatches) -> Result<Topology> {
-    let topo_file = match config_args.get_one::<String>("Topo File") {
-        Some(topo_file) => topo_file,
-        None => {
-            return Err(Error::GeneralError(String::from(
-                "topolofy file not configured",
-            )));
+fn parse_config_args(config_args: &ArgMatches) -> NetResult<Topology> {
+    match config_args.get_one::<String>("Topo File") {
+        Some(topo_file) => {
+            let mut topo_file = File::open(topo_file).unwrap();
+            let topology = Topology::from_yaml_file(&mut topo_file).unwrap();
+            Ok(topology)
         }
-    };
-
-    let mut topo_file = File::open(topo_file).unwrap();
-    let topology = Topology::from_yaml_file(&mut topo_file).unwrap();
-    Ok(topology)
+        None => Err(ConfigError::TopologyFileMissing.into()),
+    }
 }

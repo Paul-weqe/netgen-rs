@@ -13,9 +13,9 @@ use tracing::{debug, debug_span, error};
 use yaml_rust2::YamlLoader;
 use yaml_rust2::yaml::{Hash, Yaml};
 
+use crate::NetResult;
 use crate::devices::{Link, Node, Router, Switch};
 use crate::error::{ConfigError, NetError};
-use crate::{NetResult, Result};
 
 #[derive(Debug)]
 pub struct Topology {
@@ -289,7 +289,7 @@ impl Topology {
     ///
     /// This is by creating a bridged device and making sure its administrative
     ///     state is "up".This is done in the main namespace.
-    pub fn power_switches_on(&mut self) -> Result<()> {
+    pub fn power_switches_on(&mut self) -> NetResult<()> {
         let power_on_span = debug_span!("switch-power-on");
         let _span_guard = power_on_span.enter();
 
@@ -306,7 +306,7 @@ impl Topology {
     ///
     /// This is done by creating a new namespace. The adding of the relevant
     ///     interfaces is done elsewhere .
-    pub fn power_routers_on(&mut self) -> Result<()> {
+    pub fn power_routers_on(&mut self) -> NetResult<()> {
         let power_on_span = debug_span!("router-power-on");
         let _span_guard = power_on_span.enter();
 
@@ -332,7 +332,7 @@ impl Topology {
         }
     }
 
-    pub fn setup_links(&self) -> Result<()> {
+    pub fn setup_links(&self) -> NetResult<()> {
         // Make sure the loopback interfaces in all the routers in in "up" state.
         // This is not the default when creating these namespaces.
         for node in self.nodes.values() {
@@ -356,7 +356,7 @@ impl Topology {
     }
 
     /// creates a link between two nodes.
-    pub fn create_link(&self, link: &Link) -> Result<()> {
+    pub fn create_link(&self, link: &Link) -> NetResult<()> {
         let runtime = &self.runtime;
         let src_iface = format!("{}:{}", link.src_device, link.src_iface);
         let dst_iface = format!("{}:{}", link.dst_device, link.dst_iface);
@@ -408,7 +408,7 @@ impl Topology {
         node: &Node,
         current_link_name: String,
         new_link_name: String,
-    ) -> Result<()> {
+    ) -> NetResult<()> {
         let runtime = &self.runtime;
         runtime.block_on(async {
             let (connection, handle, _) = new_connection().unwrap();
@@ -445,8 +445,7 @@ impl Topology {
                                     error!(error = %err, "error coming up");
                                 }
                             })
-                            .await
-                            .unwrap();
+                            .await?;
                     }
                 }
                 Node::Switch(switch) => {
