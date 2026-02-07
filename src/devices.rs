@@ -180,7 +180,7 @@ impl Router {
     /// Creates a namespace representing the router and turns on the
     /// loopback interface.
     pub fn power_on(&mut self) -> NetResult<()> {
-        let file_path = mount_device(Some(self.name.clone()), Pid::this())?;
+        let file_path = mount_device(Some(self.name.clone()))?;
         self.file_path = Some(file_path);
         debug!(router=%self.name, "powered on");
         Ok(())

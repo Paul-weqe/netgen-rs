@@ -91,7 +91,7 @@ fn create_routers(topology: &mut Topology) -> NetResult<()> {
         Ok(ForkResult::Child) => {
             let pid = Pid::this();
 
-            let _ = mount_device(None, pid)?;
+            let _ = mount_device(None)?;
 
             if let Ok(mut f) = File::create(PID_FILE) {
                 let _ = writeln!(f, "{}", pid.as_raw());
