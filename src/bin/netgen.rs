@@ -127,20 +127,7 @@ fn add_switches_and_links(topology: &mut Topology) -> NetResult<()> {
     match fork {
         Ok(ForkResult::Child) => {
             // Enter the main namespace.
-            let main_net_path = "/tmp/netgen-rs/ns/main/net".to_string();
-            let main_net_file =
-                File::open(main_net_path.as_str()).map_err(|err| {
-                    NetError::BasicError(format!(
-                        "Error opening main {main_net_path} -> {err:?}"
-                    ))
-                })?;
-
-            setns(main_net_file.as_fd(), CloneFlags::CLONE_NEWNET)
-                .map_err(|err| {
-                    NetError::BasicError(format!(
-                        "Problem moving into main namespace in add_device_links -> {err:?}"
-                    ))
-                })?;
+            netgen::enter_ns(None)?;
             topology.power_switches_on()?;
             topology.setup_links()?;
         }

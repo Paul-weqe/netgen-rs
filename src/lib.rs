@@ -63,8 +63,8 @@ pub fn mount_device(device_name: Option<String>) -> NetResult<String> {
 
 /// When we want to enter the main namespace, the `device_name` is None.
 /// If not, specify the name of the device e.g Some("router-1").
-fn enter_ns(device_name: Option<String>) -> NetResult<()> {
-    let device = DeviceDetails::new(device_name);
+pub fn enter_ns(device_name: Option<String>) -> NetResult<()> {
+    let device = DeviceDetails::new(device_name.clone());
     let device_net_path = device.netns_path();
     let device_pid_path = device.pidns_path();
 
@@ -90,6 +90,7 @@ fn enter_ns(device_name: Option<String>) -> NetResult<()> {
         },
     )?;
 
+    // If we are forking from / to main, we don't CLONE_NEWPID.
     setns(device_pid_file.as_fd(), CloneFlags::CLONE_NEWPID).map_err(
         |source| {
             NetError::NamespaceError(NamespaceError::ReturnToMain { source })
@@ -132,30 +133,16 @@ fn create_ns(device: &DeviceDetails) -> NetResult<()> {
         })
     })?;
 
-    // Create net paths.
+    // Create net namespace.
     File::create(device.netns_path()).map_err(|err| {
         NetError::BasicError(format!(
             "unable to create path {} -> {err:?}",
             &device.netns_path()
         ))
     })?;
-
-    // Create PID paths.
-    File::create(device.pidns_path()).map_err(|err| {
-        NetError::BasicError(format!(
-            "unable to create path {} -> {err:?}",
-            &device.pidns_path()
-        ))
-    })?;
-
     let proc_net_ns_path = "/proc/self/ns/net".to_string();
-    let proc_pid_ns_path = "/proc/self/ns/pid".to_string();
-
     let net_path = &device.netns_path();
-    let pid_path = &device.pidns_path();
-
     let target_net_path = Path::new(net_path);
-    let target_pid_path = Path::new(pid_path);
 
     mount(
         Some(proc_net_ns_path.as_str()),
@@ -171,6 +158,18 @@ fn create_ns(device: &DeviceDetails) -> NetResult<()> {
             source: err,
         })
     })?;
+
+    // Create PID namespace.
+    File::create(device.pidns_path()).map_err(|err| {
+        NetError::BasicError(format!(
+            "unable to create path {} -> {err:?}",
+            &device.pidns_path()
+        ))
+    })?;
+
+    let proc_pid_ns_path = "/proc/self/ns/pid".to_string();
+    let pid_path = &device.pidns_path();
+    let target_pid_path = Path::new(pid_path);
 
     mount(
         Some(proc_pid_ns_path.as_str()),
