@@ -1,10 +1,9 @@
 use std::collections::BTreeMap;
-use std::fs::{File, remove_dir_all};
+use std::fs::File;
 use std::future::Future;
 use std::os::fd::{AsFd, AsRawFd};
 
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
-use nix::mount::umount;
 use nix::net::if_::if_nametoindex;
 use nix::sched::{CloneFlags, setns};
 use nix::unistd::Pid;
@@ -12,12 +11,12 @@ use rand::Rng;
 use rand::distributions::Alphanumeric;
 use rtnetlink::{Handle, LinkBridge, LinkUnspec, LinkVeth, new_connection};
 use tokio::runtime::Runtime;
-use tracing::{debug, debug_span, error, error_span};
+use tracing::{debug, debug_span, error, warn, warn_span};
 use yaml_rust2::Yaml;
 use yaml_rust2::yaml::Hash;
 
 use crate::error::{ConfigError, LinkError, NamespaceError, NetError};
-use crate::{DEVICES_NS_DIR, NS_DIR, NetResult, kill_process, mount_device};
+use crate::{NS_DIR, NetResult, mount_device};
 
 // ==== trait FromYamlConfig ====
 
@@ -25,7 +24,8 @@ pub trait FromYamlConfig: Sized {
     fn from_yaml_config(name: &str, config: &Hash) -> NetResult<Self>;
 }
 
-// ==== Interface ====
+// ==== struct Interface ====
+
 #[derive(Debug, Clone)]
 pub struct Interface {
     pub name: String,
@@ -33,14 +33,22 @@ pub struct Interface {
 }
 
 impl Interface {
+    fn new(name: String) -> Self {
+        Self {
+            name,
+            addresses: vec![],
+        }
+    }
     async fn add_addresses(&self, handle: &Handle) -> NetResult<()> {
-        let ifindex = if_nametoindex(self.name.as_str()).map_err(|source| {
-            error!("Interface not found");
-            NetError::LinkError(LinkError::NoInterface {
-                iface: self.name.clone(),
-                source,
-            })
-        })?;
+        let ifindex = match if_nametoindex(self.name.as_str()) {
+            Ok(ifindex) => ifindex,
+            Err(_) => {
+                warn!(
+                    "Address not added. Interfaces without attached links not added."
+                );
+                return Ok(());
+            }
+        };
 
         for addr in &self.addresses {
             let request =
@@ -60,10 +68,20 @@ impl Interface {
 
 impl FromYamlConfig for Interface {
     fn from_yaml_config(name: &str, yaml_config: &Hash) -> NetResult<Self> {
-        let mut interface = Interface {
-            name: name.to_string(),
-            addresses: vec![],
+        let (router_name, iface_name) = match name.split_once("!!!!") {
+            Some((router_name, iface_name)) => (router_name, iface_name),
+            _ => {
+                return Err(NetError::BasicError(format!(
+                    "Improperly formatter name in Interface::from_yaml_config. \
+                    Received {name}.\
+                    Must be in the format {{router-name}}!!!!{{interface-name}}"
+                ))
+                .into());
+            }
         };
+        let mut interface = Interface::new(iface_name.to_string());
+        let router_name = format!("routers->{router_name}->interfaces->");
+        let iface_name = format!("{router_name}->{iface_name}");
 
         // --- Get the interface's Ipv4 addresses ---
         if let Some(ipv4_addresses) =
@@ -81,7 +99,9 @@ impl FromYamlConfig for Interface {
                                 return Err(ConfigError::InvalidAddress {
                                     addr_type: "ipv4".to_string(),
                                     address: "addr_str".to_string(),
-                                    interface: format!("iface.{name}.ipv4"),
+                                    interface: format!(
+                                        "{iface_name}->ipv4->??"
+                                    ),
                                     source: err,
                                 }
                                 .into());
@@ -89,14 +109,17 @@ impl FromYamlConfig for Interface {
                         }
                     }
                 }
+                Yaml::Null => {
+                    // Ipv4 addresses list is blank.
+                }
                 _ => {
-                    return Err(ConfigError::IncorrectType {
-                        field: format!(
-                            "interfaces.iface[{name}].ipv4[config??]"
-                        ),
-                        expected: "array".to_string(),
-                    }
-                    .into());
+                    return {
+                        Err(ConfigError::IncorrectType {
+                            field: format!("{iface_name}->ipv4??"),
+                            expected: "array".to_string(),
+                        }
+                        .into())
+                    };
                 }
             }
         }
@@ -106,8 +129,8 @@ impl FromYamlConfig for Interface {
             yaml_config.get(&Yaml::String(String::from("ipv6")))
         {
             match ipv6_addresses {
-                Yaml::Array(ipv4_addresses) => {
-                    let mut addr_iter = ipv4_addresses.iter();
+                Yaml::Array(ipv6_addresses) => {
+                    let mut addr_iter = ipv6_addresses.iter();
                     while let Some(Yaml::String(addr_str)) = addr_iter.next() {
                         match addr_str.parse::<Ipv6Network>() {
                             Ok(ip_net) => {
@@ -117,7 +140,9 @@ impl FromYamlConfig for Interface {
                                 return Err(ConfigError::InvalidAddress {
                                     addr_type: "ipv6".to_string(),
                                     address: "addr_str".to_string(),
-                                    interface: format!("iface.{name}.ipv6"),
+                                    interface: format!(
+                                        "{iface_name}->ipv6->??"
+                                    ),
                                     source: err,
                                 }
                                 .into());
@@ -125,12 +150,17 @@ impl FromYamlConfig for Interface {
                         }
                     }
                 }
+                Yaml::Null => {
+                    // Ipv6 addresses list is blank.
+                }
                 _ => {
-                    return Err(ConfigError::IncorrectType {
-                        field: format!("ifaces.iface[[{name}]].ipv6[config??]"),
-                        expected: "array".to_string(),
-                    }
-                    .into());
+                    return {
+                        Err(ConfigError::IncorrectType {
+                            field: format!("{iface_name}->ipv6??"),
+                            expected: "array".to_string(),
+                        }
+                        .into())
+                    };
                 }
             }
         }
@@ -147,7 +177,7 @@ pub(crate) enum Node {
 }
 
 impl Node {
-    pub fn power_off(&mut self) -> NetResult<()> {
+    pub fn power_off(&self) -> NetResult<()> {
         if let Self::Router(router) = self {
             router.power_off()?;
         }
@@ -182,7 +212,7 @@ impl Router {
     pub fn power_on(&mut self) -> NetResult<()> {
         let file_path = mount_device(Some(self.name.clone()))?;
         self.file_path = Some(file_path);
-        debug!(router=%self.name, "powered on");
+        debug!(router=%self.name, "Powered on");
         Ok(())
     }
 
@@ -217,34 +247,8 @@ impl Router {
     }
 
     /// Deletes the namespace created by the Router (if it exists)
-    pub fn power_off(&mut self) -> NetResult<()> {
-        let device_dir = format!("{DEVICES_NS_DIR}/{}", self.name);
-        kill_process(format!("{device_dir}/.pid").as_str())?;
-
-        // create the file that will be hooked to the router's namespace.
-        let ns_path = format!("{device_dir}/net");
-
-        umount(ns_path.as_str()).map_err(|err| {
-            error!(
-                router = %self.name,
-                error = %err,"issue unmounting namespace"
-            );
-            NamespaceError::Unmount {
-                path: ns_path.clone(),
-                source: err,
-            }
-        })?;
-
-        // Remove the files.
-        remove_dir_all(&device_dir).map_err(|err| {
-            error!(router = %self.name, error = %err, dir=%device_dir,
-                    "problem removing directory");
-            NetError::BasicError(format!(
-                "Unable to remove directory {device_dir}: {err:?}"
-            ))
-        })?;
-
-        debug!(router = %self.name, "deleted");
+    pub fn power_off(&self) -> NetResult<()> {
+        crate::delete_ns(Some(self.name.clone()))?;
         Ok(())
     }
 
@@ -356,7 +360,7 @@ impl Router {
                 for iface in interfaces {
                     let iface_name = iface.name.clone();
                     let add_iface_addr_span =
-                        error_span!("add-address", %iface_name, %router_name);
+                        warn_span!("add-address", %iface_name, %router_name);
                     let _span_guard = add_iface_addr_span.enter();
                     iface.add_addresses(&handle).await?;
                 }
@@ -374,33 +378,49 @@ impl FromYamlConfig for Router {
         match router_config.get(&Yaml::String(String::from("interfaces"))) {
             Some(Yaml::Hash(interfaces_config)) => {
                 for (iface_name, iface_config) in interfaces_config {
-                    if let Yaml::String(iface_name) = iface_name {
-                        match iface_config {
-                            Yaml::Hash(iface_config) => {
-                                let interface = Interface::from_yaml_config(
-                                    iface_name,
-                                    iface_config,
-                                )?;
-                                router.interfaces.push(interface);
+                    let iface_name = match iface_name {
+                        Yaml::String(iface_name) => iface_name,
+                        _ => {
+                            return Err(ConfigError::IncorrectType {
+                                field: format!(
+                                    "routers->{name}->interfaces->[??:config]"
+                                ),
+                                expected: "string".to_string(),
                             }
-                            _ => {
-                                return Err(ConfigError::IncorrectType {
-                                    field: format!(
-                                        "routers.router[{name}].interfaces.{iface_name}[config??]"
-                                    ),
-                                    expected: "hash".to_string(),
-                                }
-                                .into());
-                            }
+                            .into());
+                        }
+                    };
+
+                    match iface_config {
+                        Yaml::Hash(iface_config) => {
+                            let name = format!("{name}!!!!{iface_name}");
+                            let interface = Interface::from_yaml_config(
+                                &name,
+                                iface_config,
+                            )?;
+                            router.interfaces.push(interface);
+                        }
+                        Yaml::Null => {
+                            // TODO: Make sure interface come up successfully
+                            // on this config branch.
+                            let interface =
+                                Interface::new(iface_name.to_string());
+                            router.interfaces.push(interface);
+                        }
+                        _ => {
+                            return Err(ConfigError::IncorrectType {
+                                field: format!("routers->{name}->interfaces->{iface_name}->??"),
+                                expected: "hash".to_string(),
+                            }.into());
                         }
                     }
                 }
                 Ok(router)
             }
-            _ => Err(ConfigError::IncorrectType {
-                field: format!(
-                    "routers.router[{name}].interfaces[interface-config??]"
-                ),
+            // Interfaces have not been configured.
+            Some(Yaml::Null) | None => Ok(router),
+            Some(_) => Err(ConfigError::IncorrectType {
+                field: format!("routers->{name}->interfaces->??"),
                 expected: "hash".to_string(),
             }
             .into()),
@@ -445,7 +465,7 @@ impl Switch {
 
             if let Ok(ifindex) = if_nametoindex(name) {
                 self.ifindex = Some(ifindex);
-                debug!(switch = %self.name, "powered on");
+                debug!(switch = %self.name, "Powered on");
             }
 
             Ok(())
@@ -478,8 +498,10 @@ impl FromYamlConfig for Switch {
                     match iface_name {
                         Yaml::String(iface_name) => match iface_config {
                             Yaml::Hash(iface_config) => {
+                                let iface_name =
+                                    format!("{switch_name}!!!!{iface_name}");
                                 let interface = Interface::from_yaml_config(
-                                    iface_name,
+                                    &iface_name,
                                     iface_config,
                                 )?;
                                 switch.interfaces.push(interface);
@@ -556,7 +578,7 @@ impl LinkManager {
         let dst_iface = format!("{}:{}", link.dst_device, link.dst_iface);
         let link_span = debug_span!("link-setup", %src_iface, %dst_iface);
         let _span_guard = link_span.enter();
-        debug!("setting up");
+        debug!("Setting up");
 
         // generate random names for veth link
         // we do this to avoid conflict in the
@@ -612,7 +634,7 @@ impl LinkManager {
                 link.dst_iface.clone(),
             )?;
         }
-        debug!("setup complete");
+        debug!("Setup complete");
 
         Ok(())
     }

@@ -19,29 +19,29 @@ pub enum NetError {
 
 #[derive(Debug, ThisError)]
 pub enum ConfigError {
-    #[error("Topology file not configured")]
+    #[error("Topology file not configured.")]
     TopologyFileMissing,
 
-    #[error("Link {src} <-> {dst} configured multiple times")]
+    #[error("Link {src} <-> {dst} configured multiple times.")]
     DuplicateLink { src: String, dst: String },
 
-    #[error("Node {0} has been configured multiple times")]
+    #[error("Node {0} has been configured multiple times.")]
     DuplicateNode(String),
 
-    #[error("Field '{field}' has incorrect type (expected {expected})")]
+    #[error("Field {field} has incorrect type. Expected type '{expected}'.")]
     IncorrectType { field: String, expected: String },
 
-    #[error("Missing required field {0}")]
+    #[error("Topology missing required field '{0}'.")]
     MissingField(String),
 
-    #[error("Link references to unknown node {0}")]
+    #[error("Link references to unknown node {0}.")]
     UnknownNode(String),
 
-    #[error("Invalid YAML Syntax {0}")]
+    #[error("Invalid YAML Syntax {0}.")]
     YamlSyntax(#[from] ScanError),
 
     #[error(
-        "Invalid {addr_type} address '{address}' for interface '{interface}'"
+        "Invalid {addr_type} address '{address}' for interface '{interface}'."
     )]
     InvalidAddress {
         addr_type: String,
@@ -55,7 +55,7 @@ pub enum ConfigError {
 #[derive(Debug, ThisError)]
 pub enum NamespaceError {
     // Directory/filesystem operations
-    #[error("Failed to create namespace path '{path}': {source}")]
+    #[error("Failed to create namespace path '{path}': {source}.")]
     PathCreation {
         path: String,
         #[source]
@@ -64,7 +64,7 @@ pub enum NamespaceError {
 
     // Namespace mounting
     #[error(
-        "Failed to mount {ns_type} namespace for device '{device}': {source}"
+        "Failed to mount {ns_type} namespace for device '{device}': {source}."
     )]
     Mount {
         ns_type: String,
@@ -95,10 +95,10 @@ pub enum NamespaceError {
     },
 
     // Namespace not found.
-    #[error("Namespace fd for device '{device}' not found")]
+    #[error("Namespace fd for device '{device}' not found.")]
     NotFound { device: String },
 
-    #[error("Main namespace path '{0}' not found")]
+    #[error("Main namespace path '{0}' not found.")]
     MainNotFound(String),
 
     // Fork/process errors
@@ -118,7 +118,7 @@ pub enum NamespaceError {
         source: nix::Error,
     },
 
-    #[error("Failed to open namespace file {path}: {source}")]
+    #[error("Failed to open file '{path}': {source}")]
     FileOpen {
         path: String,
         #[source]

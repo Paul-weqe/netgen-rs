@@ -2,13 +2,13 @@ pub mod devices;
 pub mod error;
 pub mod topology;
 
-use std::fs::{File, OpenOptions, create_dir_all};
+use std::fs::{File, OpenOptions, create_dir_all, remove_dir_all};
 use std::io::{BufRead, Write};
 use std::os::fd::AsFd;
 use std::path::Path;
 
 use error::{NamespaceError, NetError};
-use nix::mount::{MsFlags, mount};
+use nix::mount::{MsFlags, mount, umount};
 use nix::sched::{CloneFlags, setns, unshare};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::{ForkResult, Pid, fork, pause};
@@ -23,15 +23,17 @@ pub const PID_FILE: &str = "/tmp/netgen-rs/ns/main/.pid";
 // If we are trying to mount the main pid, we leave device_name as None
 pub fn mount_device(device_name: Option<String>) -> NetResult<String> {
     let device = DeviceDetails::new(device_name.clone());
+    let clone_flags = match device_name {
+        Some(_) => CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWPID,
+        None => CloneFlags::CLONE_NEWNET,
+    };
 
-    unshare(CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWPID).map_err(
-        |err| {
-            NetError::NamespaceError(NamespaceError::Unshare {
-                ns_name: device.name.clone(),
-                source: err,
-            })
-        },
-    )?;
+    unshare(clone_flags).map_err(|err| {
+        NetError::NamespaceError(NamespaceError::Unshare {
+            ns_name: device.name.clone(),
+            source: err,
+        })
+    })?;
 
     match unsafe { fork() } {
         Ok(ForkResult::Child) => {
@@ -51,7 +53,7 @@ pub fn mount_device(device_name: Option<String>) -> NetResult<String> {
     // If this is the main namespace being created, we may have to wait for
     // the mounting process.
     if device_name.is_none() {
-        debug!("mounting main namespace");
+        debug!("Starting main namespace");
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
@@ -90,7 +92,6 @@ pub fn enter_ns(device_name: Option<String>) -> NetResult<()> {
         },
     )?;
 
-    // If we are forking from / to main, we don't CLONE_NEWPID.
     setns(device_pid_file.as_fd(), CloneFlags::CLONE_NEWPID).map_err(
         |source| {
             NetError::NamespaceError(NamespaceError::ReturnToMain { source })
@@ -111,13 +112,15 @@ pub fn enter_ns(device_name: Option<String>) -> NetResult<()> {
             })?;
         }
         Err(err) => {
-            return Err(NetError::NamespaceError(NamespaceError::Fork {
+            return Err(NamespaceError::Fork {
                 fork_function: String::from("enter_ns"),
                 source: err,
-            }));
+            }
+            .into());
         }
     }
 
+    // Only continue with the child process.
     if Pid::this() == pid {
         std::process::exit(0);
     }
@@ -214,11 +217,58 @@ pub fn kill_process(pid_file: &str) -> NetResult<()> {
         if let Ok(pid) = pid.trim().parse::<i32>() {
             kill(Pid::from_raw(pid), Signal::SIGKILL).map_err(|err| {
                 NetError::BasicError(format!(
-                    "Issue killing process PID {pid} : {err:?}"
+                    "Unable to kill process PID {pid} : {err:?}"
                 ))
             })?;
         }
     }
+    Ok(())
+}
+
+/// Deletes the namespace created by the Router (if it exists)
+pub fn delete_ns(device_name: Option<String>) -> NetResult<()> {
+    let device = DeviceDetails::new(device_name.clone());
+    let net_ns_path = device.netns_path();
+    let pid_ns_path = device.pidns_path();
+
+    // If it is main namespace. We delete also the PID.
+    if device_name.is_none() {
+        kill_process(PID_FILE)?;
+    }
+
+    umount(net_ns_path.as_str()).map_err(|err| {
+        error!(
+            router = %device.name,
+            error = %err,"issue unmounting namespace"
+        );
+        NamespaceError::Unmount {
+            path: net_ns_path.clone(),
+            source: err,
+        }
+    })?;
+
+    umount(pid_ns_path.as_str()).map_err(|err| {
+        error!(
+            router = %device.name,
+            error = %err,"issue unmounting namespace"
+        );
+        NamespaceError::Unmount {
+            path: pid_ns_path.clone(),
+            source: err,
+        }
+    })?;
+
+    // Remove the files.
+    remove_dir_all(&device.home_path).map_err(|err| {
+        error!(router = %device.name, error = %err, dir=%device.home_path,
+                    "problem removing directory");
+        NetError::BasicError(format!(
+            "Unable to remove directory {:?}: {err:?}",
+            device.home_path
+        ))
+    })?;
+
+    debug!(router = %device.name, "deleted");
     Ok(())
 }
 

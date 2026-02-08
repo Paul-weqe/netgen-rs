@@ -129,7 +129,7 @@ impl TopologyParser {
                         Yaml::String(name) => name,
                         _ => {
                             return Err(ConfigError::IncorrectType {
-                                field: "routers.router[name??]".to_string(),
+                                field: "routers->??".to_string(),
                                 expected: "string".to_string(),
                             }
                             .into());
@@ -137,25 +137,31 @@ impl TopologyParser {
                     };
 
                     let router_config = match router_config {
-                        Yaml::Hash(router_config) => router_config,
+                        Yaml::Hash(router_config) => Some(router_config),
+                        Yaml::Null => None,
                         _ => {
                             return Err(ConfigError::IncorrectType {
-                                field: "routers.router[router_name][config??]"
-                                    .to_string(),
+                                field: format!("routers->{}->??", &router_name),
                                 expected: "hash".to_string(),
                             }
                             .into());
                         }
                     };
 
-                    let router =
-                        Router::from_yaml_config(router_name, router_config)?;
+                    let router = match router_config {
+                        Some(router_config) => Router::from_yaml_config(
+                            router_name,
+                            router_config,
+                        )?,
+                        None => Router::new(router_name),
+                    };
                     routers.push(router);
                 }
                 Ok(routers)
             }
+            Yaml::Null => Ok(routers),
             _ => Err(ConfigError::IncorrectType {
-                field: "routers[config??]".to_string(),
+                field: "routers->??".to_string(),
                 expected: "hash".to_string(),
             }
             .into()),
@@ -185,7 +191,7 @@ impl TopologyParser {
                         _ => {
                             return Err(ConfigError::IncorrectType {
                                 field: format!(
-                                    "switches.switch[{switch_name}][config??]"
+                                    "switches.switch[{switch_name}][??]"
                                 ),
                                 expected: "hash".to_string(),
                             }
@@ -200,7 +206,7 @@ impl TopologyParser {
             }
             _ => {
                 return Err(ConfigError::IncorrectType {
-                    field: "switches[config??]".to_string(),
+                    field: "switches[??]".to_string(),
                     expected: "hash".to_string(),
                 }
                 .into());
@@ -237,7 +243,7 @@ impl TopologyParser {
             }
         } else {
             return Err(ConfigError::IncorrectType {
-                field: "links[config??]".to_string(),
+                field: "links.[??]".to_string(),
                 expected: "array".to_string(),
             }
             .into());
@@ -268,16 +274,16 @@ impl TopologyParser {
 pub struct Topology {
     // String holds the nodename(),
     // Node holds the node object.
-    nodes: BTreeMap<String, Node>,
     links: Vec<Link>,
+    nodes: BTreeMap<String, Node>,
     runtime: Runtime,
 }
 
 impl Topology {
     pub fn new() -> NetResult<Self> {
         Ok(Self {
-            nodes: BTreeMap::new(),
             links: vec![],
+            nodes: BTreeMap::new(),
             runtime: tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -327,13 +333,16 @@ impl Topology {
     /// For switches, this means deleting the bridged interface
     ///
     /// For routers, this is deleting the respective namespaces
-    pub fn power_off(&mut self) -> NetResult<()> {
-        let power_off_span = debug_span!("net-stop");
+    pub fn power_off(&self) -> NetResult<()> {
+        let power_off_span = debug_span!("power-off");
         let _span_guard = power_off_span.enter();
         // Powers off all the nodes
-        for node in self.nodes.values_mut() {
+        for node in self.nodes.values() {
             node.power_off()?;
         }
+
+        // Deletes the main namespace.
+        crate::delete_ns(None)?;
         Ok(())
     }
 
