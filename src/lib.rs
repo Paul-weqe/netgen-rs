@@ -3,8 +3,7 @@ pub mod error;
 pub mod topology;
 
 use std::fs;
-use std::fs::{File, OpenOptions, create_dir_all, remove_dir_all};
-use std::io::{BufRead, Write};
+use std::fs::{File, create_dir_all, remove_dir_all};
 use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
@@ -20,7 +19,7 @@ pub type NetResult<T> = std::result::Result<T, error::NetError>;
 
 pub const NS_DIR: &str = "/tmp/netgen-rs/ns";
 pub const DEVICES_NS_DIR: &str = "/tmp/netgen-rs/ns/devices";
-pub const PID_FILE: &str = "/tmp/netgen-rs/ns/main/.pid";
+pub const MAIN_NS_DIR: &str = "/tmp/netgen-rs/ns/main";
 
 // If we are trying to mount the main pid, we leave device_name as None
 pub fn mount_device(device_name: Option<String>) -> NetResult<String> {
@@ -191,14 +190,6 @@ fn create_ns(device: &DeviceDetails) -> NetResult<()> {
         })
     })?;
 
-    // Path to the .pid file for the namespace.
-    let pid_path = format!("{}/.pid", device.home_path);
-
-    // Create PID file.
-    if let Ok(mut f) = File::create(pid_path) {
-        let _ = writeln!(f, "{}", Pid::this().as_raw());
-    }
-
     pause();
     Ok(())
 }
@@ -213,26 +204,6 @@ pub fn destroy_ns(device_name: Option<String>) -> NetResult<()> {
     }
 
     umount_ns(device_name)
-}
-
-/// Kills the process specified in the file.
-/// Mostly a .pid file.
-fn kill_process_by_file(pid_file: &str) -> NetResult<()> {
-    // Kills all the running plugin PIDs.
-    if let Ok(file) = OpenOptions::new().read(true).open(pid_file) {
-        let mut reader = std::io::BufReader::new(file);
-        let mut pid = String::new();
-        let _ = reader.read_line(&mut pid).map_err(|err| {
-            NetError::BasicError(format!(
-                "Unable to read file:{pid_file} : {err:?}"
-            ))
-        })?;
-
-        if let Ok(pid) = pid.trim().parse::<i32>() {
-            kill_process(pid)?;
-        }
-    }
-    Ok(())
 }
 
 pub fn kill_process(pid: i32) -> NetResult<()> {
@@ -331,7 +302,7 @@ impl DeviceDetails {
             },
             None => Self {
                 name: "main".to_string(),
-                home_path: format!("{NS_DIR}/main"),
+                home_path: MAIN_NS_DIR.to_string(),
             },
         }
     }

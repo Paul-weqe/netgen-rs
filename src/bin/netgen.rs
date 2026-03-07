@@ -1,11 +1,10 @@
 use std::fs::{self, File};
-use std::io::Write;
 use std::path::Path;
 
 use clap::{Arg, ArgMatches, command};
 use netgen::error::{ConfigError, NamespaceError, NetError};
 use netgen::topology::{Topology, TopologyParser};
-use netgen::{DEVICES_NS_DIR, NetResult, PID_FILE, mount_device};
+use netgen::{DEVICES_NS_DIR, MAIN_NS_DIR, NetResult, mount_device};
 use nix::sys::wait::waitpid;
 use nix::unistd::{ForkResult, Pid, fork};
 use tracing::{Level, debug, error};
@@ -39,13 +38,13 @@ fn main() -> NetResult<()> {
             let mut topology = config_details.0;
             let config_file_name = config_details.1;
 
-            // If the PID file exists, then there is a netgen instance already
-            // running.
-            if Path::new(PID_FILE).exists() {
+            // TODO: check if the main directory exists.
+            let path = Path::new(MAIN_NS_DIR);
+            if path.exists() {
                 let err = NetError::BasicError(format!(
                     "Topology is currently running. \
-                    Consider running 'netgen stop -t {config_file_name}', \
-                    then try again.",
+                        Consider running 'netgen stop -t {config_file_name}' \
+                        then try again.",
                 ));
                 error!(%err);
                 std::process::exit(1);
@@ -99,16 +98,10 @@ fn create_routers(topology: &mut Topology) -> NetResult<()> {
     // Fork for creating the devices.
     match fork {
         Ok(ForkResult::Child) => {
-            let pid = Pid::this();
-
             let _ = mount_device(None).map_err(|err| {
                 error!(%err);
                 std::process::exit(1);
             });
-
-            if let Ok(mut f) = File::create(PID_FILE) {
-                let _ = writeln!(f, "{}", pid.as_raw());
-            }
 
             // Creates required namespaces for the routing devices.
             topology.power_routers_on().map_err(|err| {
