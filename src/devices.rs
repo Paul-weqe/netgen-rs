@@ -248,7 +248,7 @@ impl Router {
 
     /// Deletes the namespace created by the Router (if it exists)
     pub fn power_off(&self) -> NetResult<()> {
-        crate::delete_ns(Some(self.name.clone()))?;
+        crate::destroy_ns(Some(self.name.clone()))?;
         Ok(())
     }
 

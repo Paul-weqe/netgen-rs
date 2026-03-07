@@ -2,9 +2,11 @@ pub mod devices;
 pub mod error;
 pub mod topology;
 
+use std::fs;
 use std::fs::{File, OpenOptions, create_dir_all, remove_dir_all};
 use std::io::{BufRead, Write};
 use std::os::fd::AsFd;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use error::{NamespaceError, NetError};
@@ -50,8 +52,8 @@ pub fn mount_device(device_name: Option<String>) -> NetResult<String> {
         }
     }
 
-    // If this is the main namespace being created, we may have to wait for
-    // the mounting process.
+    // During the creation of the main namespace, we wait for the mounting of
+    // the namespace first.
     if device_name.is_none() {
         debug!("Starting main namespace");
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -201,9 +203,21 @@ fn create_ns(device: &DeviceDetails) -> NetResult<()> {
     Ok(())
 }
 
+/// Kills the PIDs the device namespaces are running on,
+/// then unmounts their mountpoints.
+pub fn destroy_ns(device_name: Option<String>) -> NetResult<()> {
+    let device = DeviceDetails::new(device_name.clone());
+
+    if let Some(pid) = find_pid_from_mountpoint(&device.netns_path()) {
+        kill_process(pid)?;
+    }
+
+    umount_ns(device_name)
+}
+
 /// Kills the process specified in the file.
 /// Mostly a .pid file.
-pub fn kill_process(pid_file: &str) -> NetResult<()> {
+fn kill_process_by_file(pid_file: &str) -> NetResult<()> {
     // Kills all the running plugin PIDs.
     if let Ok(file) = OpenOptions::new().read(true).open(pid_file) {
         let mut reader = std::io::BufReader::new(file);
@@ -215,26 +229,26 @@ pub fn kill_process(pid_file: &str) -> NetResult<()> {
         })?;
 
         if let Ok(pid) = pid.trim().parse::<i32>() {
-            kill(Pid::from_raw(pid), Signal::SIGKILL).map_err(|err| {
-                NetError::BasicError(format!(
-                    "Unable to kill process PID {pid} : {err:?}"
-                ))
-            })?;
+            kill_process(pid)?;
         }
     }
     Ok(())
 }
 
+pub fn kill_process(pid: i32) -> NetResult<()> {
+    kill(Pid::from_raw(pid), Signal::SIGKILL).map_err(|err| {
+        NetError::BasicError(format!(
+            "Unable to kill process PID {pid} : {err:?}"
+        ))
+    })
+}
+
 /// Deletes the namespace created by the Router (if it exists)
-pub fn delete_ns(device_name: Option<String>) -> NetResult<()> {
+/// If deleting the main namespace, we have device_name as None.
+pub fn umount_ns(device_name: Option<String>) -> NetResult<()> {
     let device = DeviceDetails::new(device_name.clone());
     let net_ns_path = device.netns_path();
     let pid_ns_path = device.pidns_path();
-
-    // If it is main namespace. We delete also the PID.
-    if device_name.is_none() {
-        kill_process(PID_FILE)?;
-    }
 
     umount(net_ns_path.as_str()).map_err(|err| {
         error!(
@@ -270,6 +284,35 @@ pub fn delete_ns(device_name: Option<String>) -> NetResult<()> {
 
     debug!(router = %device.name, "deleted");
     Ok(())
+}
+
+/// When devices are created they are created with '{device-dir}/net' and
+/// '{device-dir}/pid' which are mount points for the network and pid namespaces.
+///
+/// We fetch the PID for the device by getting the associated PID of the network
+/// namespace mount point, we can't use the PID mount point since not all of
+/// the namespaces have them.
+pub fn find_pid_from_mountpoint(mountpoint: &str) -> Option<i32> {
+    let inode = fs::metadata(mountpoint).ok()?.ino();
+
+    let proc = fs::read_dir("/proc").ok()?;
+    for entry in proc.flatten() {
+        let name = entry.file_name();
+        let pid_str = name.to_str()?;
+
+        // Ignore dirs & files that are not numbers.
+        if !pid_str.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+
+        let ns_file = format!("/proc/{}/ns/net", pid_str);
+        if let Ok(meta) = fs::metadata(&ns_file) {
+            if meta.ino() == inode {
+                return pid_str.parse().ok();
+            }
+        }
+    }
+    None
 }
 
 // ==== struct DeviceDetails ====

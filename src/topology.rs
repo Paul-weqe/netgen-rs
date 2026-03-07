@@ -341,8 +341,8 @@ impl Topology {
             node.power_off()?;
         }
 
-        // Deletes the main namespace.
-        crate::delete_ns(None)?;
+        // Kill main namespace process and unomunts it.
+        crate::destroy_ns(None)?;
         Ok(())
     }
 
