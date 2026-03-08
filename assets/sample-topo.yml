@@ -7,6 +7,9 @@ routers:
       eth-sw1:
         ipv4:
         - 10.0.1.1/24
+    volumes:
+      - src: /tmp/src
+        dst: /tmp/dst
 
   rt2:
     interfaces:

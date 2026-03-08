@@ -5,7 +5,9 @@ use clap::{Arg, ArgMatches, command};
 use netgen::devices::Router;
 use netgen::error::{ConfigError, NamespaceError, NetError};
 use netgen::topology::{Topology, TopologyParser};
-use netgen::{DEVICES_NS_DIR, MAIN_NS_DIR, NetResult, mount_device};
+use netgen::{
+    DEVICES_NS_DIR, MAIN_NS_DIR, NetResult, mount_device, mount_router_volumes,
+};
 use nix::mount::{MsFlags, mount};
 use nix::sched::{CloneFlags, unshare};
 use nix::sys::wait::waitpid;
@@ -132,7 +134,7 @@ fn main() -> NetResult<()> {
             // Have procfs correctly mounted.
             mount(
                 None::<&str>,
-                "/proc",
+                "/",
                 None::<&str>,
                 MsFlags::MS_PRIVATE | MsFlags::MS_REC,
                 None::<&str>,
@@ -159,6 +161,9 @@ fn main() -> NetResult<()> {
                     source: err,
                 })
             })?;
+
+            // Mount the volumes.
+            mount_router_volumes(&router)?;
 
             debug!("successfully logged in");
 

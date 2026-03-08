@@ -6,7 +6,7 @@ use tokio;
 use tokio::runtime::Runtime;
 use tracing::debug_span;
 use yaml_rust2::YamlLoader;
-use yaml_rust2::yaml::{Hash, Yaml};
+use yaml_rust2::yaml::Yaml;
 
 use crate::NetResult;
 use crate::devices::{FromYamlConfig, Link, LinkManager, Node, Router, Switch};
@@ -221,19 +221,19 @@ impl TopologyParser {
             for link_config in configs {
                 if let Yaml::Hash(link_config) = link_config {
                     let link = Link {
-                        src_device: Self::get_string_field(
+                        src_device: crate::get_string_field(
                             link_config,
                             "src-device",
                         )?,
-                        src_iface: Self::get_string_field(
+                        src_iface: crate::get_string_field(
                             link_config,
                             "src-iface",
                         )?,
-                        dst_device: Self::get_string_field(
+                        dst_device: crate::get_string_field(
                             link_config,
                             "dst-device",
                         )?,
-                        dst_iface: Self::get_string_field(
+                        dst_iface: crate::get_string_field(
                             link_config,
                             "dst-iface",
                         )?,
@@ -249,22 +249,6 @@ impl TopologyParser {
             .into());
         }
         Ok(links)
-    }
-
-    // Get field value from Yaml list.
-    fn get_string_field(config: &Hash, field: &str) -> NetResult<String> {
-        let field_value = config
-            .get(&Yaml::String(field.to_string()))
-            .ok_or_else(|| ConfigError::MissingField(field.to_string()))?;
-
-        match field_value {
-            Yaml::String(value) => Ok(value.to_string()),
-            _ => Err(ConfigError::IncorrectType {
-                field: field.to_string(),
-                expected: "string".to_string(),
-            }
-            .into()),
-        }
     }
 }
 

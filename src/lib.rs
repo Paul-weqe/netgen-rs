@@ -8,12 +8,13 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use error::{NamespaceError, NetError};
+use error::{ConfigError, NamespaceError, NetError};
 use nix::mount::{MsFlags, mount, umount};
 use nix::sched::{CloneFlags, setns, unshare};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::{ForkResult, Pid, fork, pause};
 use tracing::{debug, error};
+use yaml_rust2::yaml::{Hash, Yaml};
 
 pub type NetResult<T> = std::result::Result<T, error::NetError>;
 
@@ -62,6 +63,68 @@ pub fn mount_device(device_name: Option<String>) -> NetResult<String> {
     enter_ns(None)?;
 
     Ok(device.netns_path())
+}
+
+pub fn mount_router_volumes(router: &devices::Router) -> NetResult<()> {
+    for volume in &router.volumes {
+        mount_volume(&router.name, &volume)?;
+    }
+    Ok(())
+}
+
+fn mount_volume(device_name: &str, volume: &devices::Volume) -> NetResult<()> {
+    let src_path = Path::new(&volume.src);
+    let dst_path = Path::new(&volume.dst);
+
+    if !src_path.exists() {
+        let err = NetError::NamespaceError(NamespaceError::MountSrcNotFound(
+            volume.src.clone(),
+        ));
+        return Err(err);
+    }
+
+    // Create dst path if it doesn't exist.
+    if !dst_path.exists() {
+        if src_path.is_file() {
+            let parent = dst_path.parent().unwrap();
+            fs::create_dir_all(parent).map_err(|err| {
+                NetError::BasicError(format!(
+                    "Unable to create volume path {:?}: {err:?}",
+                    &parent
+                ))
+            })?;
+            File::create(dst_path).map_err(|err| {
+                NetError::BasicError(format!(
+                    "Unable to create volume file {:?}: {err:?}",
+                    &dst_path
+                ))
+            })?;
+        } else if src_path.is_dir() {
+            fs::create_dir_all(dst_path).map_err(|err| {
+                NetError::BasicError(format!(
+                    "Unable to create volume path {:?}: {err:?}",
+                    &dst_path
+                ))
+            })?;
+        }
+    }
+
+    mount(
+        Some(src_path),
+        dst_path,
+        None::<&str>,
+        MsFlags::MS_BIND | MsFlags::MS_REC,
+        None::<&str>,
+    )
+    .map_err(|err| {
+        NetError::NamespaceError(NamespaceError::Mount {
+            ns_type: "volume mount".to_string(),
+            device: device_name.to_string(),
+            source: err,
+        })
+    })?;
+
+    Ok(())
 }
 
 /// When we want to enter the main namespace, the `device_name` is None.
@@ -284,6 +347,26 @@ pub fn find_pid_from_mountpoint(mountpoint: &str) -> Option<i32> {
         }
     }
     None
+}
+
+// Get field value from Yaml Hash.
+// TODO: have this better positioned with other YANG configs methods.
+pub(crate) fn get_string_field(
+    config: &Hash,
+    field: &str,
+) -> NetResult<String> {
+    let field_value = config
+        .get(&Yaml::String(field.to_string()))
+        .ok_or_else(|| ConfigError::MissingField(field.to_string()))?;
+
+    match field_value {
+        Yaml::String(value) => Ok(value.to_string()),
+        _ => Err(ConfigError::IncorrectType {
+            field: field.to_string(),
+            expected: "string".to_string(),
+        }
+        .into()),
+    }
 }
 
 // ==== struct DeviceDetails ====

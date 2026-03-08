@@ -6,7 +6,6 @@ use std::os::fd::{AsFd, AsRawFd};
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use nix::net::if_::if_nametoindex;
 use nix::sched::{CloneFlags, setns};
-use nix::unistd::Pid;
 use rand::Rng;
 use rand::distributions::Alphanumeric;
 use rtnetlink::{Handle, LinkBridge, LinkUnspec, LinkVeth, new_connection};
@@ -185,14 +184,21 @@ impl Node {
     }
 }
 
+// ==== Volume ====
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Volume {
+    pub(crate) src: String,
+    pub(crate) dst: String,
+}
+
 // ==== Router =====
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug, Default)]
 pub struct Router {
     pub name: String,
-    pub file_path: Option<String>,
-    pub interfaces: Vec<Interface>,
-    pub pid: Option<Pid>,
+    pub(crate) file_path: Option<String>,
+    pub(crate) interfaces: Vec<Interface>,
+    pub(crate) volumes: Vec<Volume>,
 }
 
 impl Router {
@@ -201,9 +207,7 @@ impl Router {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            file_path: None,
-            interfaces: vec![],
-            pid: None,
+            ..Default::default()
         }
     }
 
@@ -375,6 +379,7 @@ impl FromYamlConfig for Router {
     fn from_yaml_config(name: &str, router_config: &Hash) -> NetResult<Self> {
         let mut router = Self::new(name);
 
+        // Router Interface Configurations.
         match router_config.get(&Yaml::String(String::from("interfaces"))) {
             Some(Yaml::Hash(interfaces_config)) => {
                 for (iface_name, iface_config) in interfaces_config {
@@ -382,6 +387,7 @@ impl FromYamlConfig for Router {
                         Yaml::String(iface_name) => iface_name,
                         _ => {
                             return Err(ConfigError::IncorrectType {
+                                // TODO: Better format these outputs. Too ugly.
                                 field: format!(
                                     "routers->{name}->interfaces->[??:config]"
                                 ),
@@ -393,6 +399,9 @@ impl FromYamlConfig for Router {
 
                     match iface_config {
                         Yaml::Hash(iface_config) => {
+                            // HACK: introduced !!!! as a delimiter. Hopfully
+                            // nobody uses that as part of an interface name in
+                            // future lol.
                             let name = format!("{name}!!!!{iface_name}");
                             let interface = Interface::from_yaml_config(
                                 &name,
@@ -415,16 +424,41 @@ impl FromYamlConfig for Router {
                         }
                     }
                 }
-                Ok(router)
             }
-            // Interfaces have not been configured.
-            Some(Yaml::Null) | None => Ok(router),
-            Some(_) => Err(ConfigError::IncorrectType {
-                field: format!("routers->{name}->interfaces->??"),
-                expected: "hash".to_string(),
+            Some(Yaml::Null) | None => {
+                /* Ignore router interfaces config. */
             }
-            .into()),
+            Some(_) => {
+                return Err(ConfigError::IncorrectType {
+                    field: format!("routers->{name}->interfaces->??"),
+                    expected: "hash".to_string(),
+                }
+                .into());
+            }
         }
+
+        // Router Volume Configurations.
+        match router_config.get(&Yaml::String(String::from("volumes"))) {
+            Some(Yaml::Array(volumes_configs)) => {
+                for config in volumes_configs {
+                    if let Yaml::Hash(config) = config {
+                        let src = crate::get_string_field(&config, "src")?;
+                        let dst = crate::get_string_field(&config, "dst")?;
+
+                        router.volumes.push(Volume { src, dst });
+                    }
+                }
+            }
+            Some(Yaml::Null) | None => { /* Ignore volume configs. */ }
+            Some(_) => {
+                return Err(ConfigError::IncorrectType {
+                    field: format!("routers->{name}->volumes->??"),
+                    expected: "hash".to_string(),
+                }
+                .into());
+            }
+        }
+        Ok(router)
     }
 }
 

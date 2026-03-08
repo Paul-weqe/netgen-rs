@@ -74,6 +74,9 @@ pub enum NamespaceError {
         source: std::io::Error,
     },
 
+    #[error("Mount source {0} not found.")]
+    MountSrcNotFound(String),
+
     // Namespace mounting
     #[error(
         "Failed to mount {ns_type} namespace for device '{device}': {source}."
