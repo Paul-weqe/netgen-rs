@@ -2,11 +2,14 @@ use std::fs::{self, File};
 use std::path::Path;
 
 use clap::{Arg, ArgMatches, command};
+use netgen::devices::Router;
 use netgen::error::{ConfigError, NamespaceError, NetError};
 use netgen::topology::{Topology, TopologyParser};
 use netgen::{DEVICES_NS_DIR, MAIN_NS_DIR, NetResult, mount_device};
+use nix::mount::{MsFlags, mount};
+use nix::sched::{CloneFlags, unshare};
 use nix::sys::wait::waitpid;
-use nix::unistd::{ForkResult, Pid, fork};
+use nix::unistd::{ForkResult, Pid, execvp, fork};
 use tracing::{Level, debug, error};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::*;
@@ -25,22 +28,24 @@ fn main() -> NetResult<()> {
                 .args(config_args())
                 .about("stops the running netgen setup"),
         )
+        .subcommand(
+            command!("login")
+                .args(login_args())
+                .about("logs into device"),
+        )
         .get_matches();
 
     match app_match.subcommand() {
         Some(("start", start_args)) => {
-            let config_details = parse_config_args(start_args)
-                .map_err(|err| {
-                    error!(%err);
-                    std::process::exit(1);
-                })
-                .unwrap();
-            let mut topology = config_details.0;
-            let config_file_name = config_details.1;
+            let (mut topology, config_file_name) =
+                parse_config_args(start_args)
+                    .map_err(|err| {
+                        error!(%err);
+                        std::process::exit(1);
+                    })
+                    .unwrap();
 
-            // TODO: check if the main directory exists.
-            let path = Path::new(MAIN_NS_DIR);
-            if path.exists() {
+            if instance_running() {
                 let err = NetError::BasicError(format!(
                     "Topology is currently running. \
                         Consider running 'netgen stop -t {config_file_name}' \
@@ -84,11 +89,103 @@ fn main() -> NetResult<()> {
                 std::process::exit(1);
             });
         }
+        Some(("login", login_args)) => {
+            // TODO: Look into customizing the LoginErrors. Currently mushed
+            // together with ConfigErrors. Improved partitioning of the two.
+            let router = parse_login_args(login_args)
+                .map_err(|err| {
+                    error!(%err);
+                    std::process::exit(1);
+                })
+                .unwrap();
+
+            // Check if topology instance is running.
+            if !instance_running() {
+                let err = NetError::BasicError(format!(
+                    "No topology instance currently running."
+                ));
+
+                error!(%err);
+                std::process::exit(1);
+            }
+
+            // Check if device instance is running.
+            if !device_running(&router.name) {
+                let err = NetError::BasicError(format!(
+                    "Device instance not running. Ensure device has been started"
+                ));
+                error!(%err);
+                std::process::exit(1);
+            }
+
+            // Enter into the device's PID and network namespaces.
+            netgen::enter_ns(Some(router.name.clone()))?;
+
+            // unshare into the mount namespace.
+            unshare(CloneFlags::CLONE_NEWNS).map_err(|err| {
+                NetError::NamespaceError(NamespaceError::Unshare {
+                    ns_name: router.name.clone(),
+                    source: err,
+                })
+            })?;
+
+            // Have procfs correctly mounted.
+            mount(
+                None::<&str>,
+                "/proc",
+                None::<&str>,
+                MsFlags::MS_PRIVATE | MsFlags::MS_REC,
+                None::<&str>,
+            )
+            .map_err(|err| {
+                NetError::NamespaceError(NamespaceError::Mount {
+                    ns_type: String::from("proc mount"),
+                    device: router.name.clone(),
+                    source: err,
+                })
+            })?;
+
+            mount(
+                Some("proc"),
+                "/proc",
+                Some("proc"),
+                MsFlags::empty(),
+                None::<&str>,
+            )
+            .map_err(|err| {
+                NetError::NamespaceError(NamespaceError::Mount {
+                    ns_type: String::from("mount"),
+                    device: router.name.clone(),
+                    source: err,
+                })
+            })?;
+
+            debug!("successfully logged in");
+
+            let shell = std::ffi::CString::new("/bin/bash").unwrap();
+            execvp(&shell, &[&shell]).map_err(|err| {
+                NetError::BasicError(format!("execvp failed: {err}"))
+            })?;
+        }
         _ => {
             // Probably "help"
         }
     }
     Ok(())
+}
+
+/// Checks if the main directory exists indicating if there is an instance
+/// running.
+fn instance_running() -> bool {
+    Path::new(MAIN_NS_DIR).exists()
+}
+
+/// Make sure both the net and pid files are present.
+fn device_running(router_name: &str) -> bool {
+    let net_path = format!("{DEVICES_NS_DIR}/{router_name}/net");
+    let pid_path = format!("{DEVICES_NS_DIR}/{router_name}/pid");
+
+    Path::new(&net_path).exists() && Path::new(&pid_path).exists()
 }
 
 // Powers on all the devices in the topology.
@@ -157,6 +254,21 @@ fn config_args() -> Vec<Arg> {
     ]
 }
 
+fn login_args() -> Vec<Arg> {
+    vec![
+        Arg::new("Device Name")
+            .short('d')
+            .long("device")
+            .value_name("device-name")
+            .help("name of device"),
+        Arg::new("Topo File")
+            .short('t')
+            .long("topo")
+            .value_name("yaml-file")
+            .help("file with the topology"),
+    ]
+}
+
 /// Returns Result<(topology_object, config_file_path)>
 fn parse_config_args(
     config_args: &ArgMatches,
@@ -178,4 +290,29 @@ fn parse_config_args(
             std::process::exit(1);
         }
     }
+}
+
+fn parse_login_args(config_args: &ArgMatches) -> NetResult<Router> {
+    let topo_yml_file = config_args
+        .get_one::<String>("Topo File")
+        .ok_or(ConfigError::TopologyFileMissing)?;
+
+    let router_name = config_args
+        .get_one::<String>("Device Name")
+        .ok_or(ConfigError::DeviceNameMissing)?;
+
+    // Generate Topology.
+    let mut topo_file =
+        File::open(topo_yml_file).map_err(|err| NamespaceError::FileOpen {
+            path: topo_yml_file.to_string(),
+            source: err,
+        })?;
+    let topology = TopologyParser::from_yaml_file(&mut topo_file)?;
+
+    // Fetch device.
+    let router = topology
+        .get_router(&router_name)
+        .ok_or(ConfigError::UnknownNode(router_name.to_string()))?;
+
+    Ok(router)
 }

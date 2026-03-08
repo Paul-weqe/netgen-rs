@@ -295,6 +295,18 @@ impl Topology {
         })
     }
 
+    fn get_node(&self, device_name: &str) -> Option<Node> {
+        self.nodes.get(device_name).cloned()
+    }
+
+    pub fn get_router(&self, router_name: &str) -> Option<Router> {
+        if let Some(Node::Router(router)) = self.get_node(router_name) {
+            Some(router)
+        } else {
+            None
+        }
+    }
+
     /// We power on the switches.
     ///
     /// This is by creating a bridged device and making sure its administrative

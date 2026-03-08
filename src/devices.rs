@@ -171,7 +171,7 @@ impl FromYamlConfig for Interface {
 // ==== Node ====
 
 #[derive(Debug, Clone)]
-pub(crate) enum Node {
+pub enum Node {
     Router(Router),
     Switch(Switch),
 }

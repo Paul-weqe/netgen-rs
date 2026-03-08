@@ -14,13 +14,25 @@ pub enum NetError {
     NamespaceError(#[from] NamespaceError),
 
     #[error(transparent)]
+    LoginError(#[from] LoginError),
+
+    #[error(transparent)]
     LinkError(#[from] LinkError),
+}
+
+#[derive(Debug, ThisError)]
+pub enum LoginError {
+    #[error("Unable to reach {0}, make sure device has been turned on.")]
+    HostUnreachable(String),
 }
 
 #[derive(Debug, ThisError)]
 pub enum ConfigError {
     #[error("Topology file not configured.")]
     TopologyFileMissing,
+
+    #[error("Device name is not configured.")]
+    DeviceNameMissing,
 
     #[error("Link {src} <-> {dst} configured multiple times.")]
     DuplicateLink { src: String, dst: String },
