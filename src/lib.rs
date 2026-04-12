@@ -1,4 +1,5 @@
 pub mod devices;
+
 pub mod error;
 pub mod topology;
 
@@ -8,7 +9,7 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use error::{ConfigError, NamespaceError, NetError};
+use error::{ConfigError, NamespaceError, NetError, YamlPath};
 use nix::mount::{MsFlags, mount, umount};
 use nix::sched::{CloneFlags, setns, unshare};
 use nix::sys::signal::{Signal, kill};
@@ -357,14 +358,17 @@ pub(crate) fn get_string_field(
     config: &Hash,
     field: &str,
 ) -> NetResult<String> {
-    let field_value = config
-        .get(&Yaml::String(field.to_string()))
-        .ok_or_else(|| ConfigError::MissingField(field.to_string()))?;
+    let field_value =
+        config
+            .get(&Yaml::String(field.to_string()))
+            .ok_or_else(|| ConfigError::MissingField {
+                path: YamlPath::new().key(field).unknown(),
+            })?;
 
     match field_value {
         Yaml::String(value) => Ok(value.to_string()),
         _ => Err(ConfigError::IncorrectType {
-            field: field.to_string(),
+            path: YamlPath::new().key(field).unknown(),
             expected: "string".to_string(),
         }
         .into()),

@@ -19,7 +19,9 @@ use tracing::{debug, debug_span, error, warn, warn_span};
 use yaml_rust2::Yaml;
 use yaml_rust2::yaml::Hash;
 
-use crate::error::{ConfigError, LinkError, NamespaceError, NetError};
+use crate::error::{
+    ConfigError, LinkError, NamespaceError, NetError, YamlPath,
+};
 use crate::{NS_DIR, NetResult, mount_device};
 
 // ==== trait FromYamlConfig ====
@@ -77,7 +79,7 @@ impl Interface {
     fn parse_ip_addresses<N>(
         yaml_config: &Hash,
         key: &str,
-        path_prefix: &str,
+        path: &YamlPath,
     ) -> NetResult<Vec<IpNetwork>>
     where
         N: std::str::FromStr<Err = ipnetwork::IpNetworkError>,
@@ -103,7 +105,7 @@ impl Interface {
                         ConfigError::InvalidAddress {
                             addr_type: key.to_string(),
                             address: addr_str.to_string(),
-                            interface: format!("{path_prefix}->{key}->??"),
+                            path: path.clone(),
                             source: err,
                         }
                         .into()
@@ -112,7 +114,7 @@ impl Interface {
                 .collect(),
             Yaml::Null => Ok(vec![]),
             _ => Err(ConfigError::IncorrectType {
-                field: format!("{path_prefix}->{key}->??"),
+                path: path.clone(),
                 expected: "array".to_string(),
             }
             .into()),
@@ -127,21 +129,28 @@ impl FromYamlConfig for Interface {
         iface_ctx: BTreeMap<&str, &str>,
     ) -> NetResult<Self> {
         let mut interface = Interface::new(iface_name.to_string());
-        let iface_path = match (
+        let mut yaml_path = match (
             iface_ctx.get("device_name"),
             iface_ctx.get("device_type"),
         ) {
             (Some(device_name), Some(device_type)) => {
-                let device_name = if *device_type == "switch" {
-                    format!("switches->{device_name}->interfaces")
+                if *device_type == "switch" {
+                    YamlPath::new()
+                        .key("switches")
+                        .key(*device_name)
+                        .key("interfaces")
+                        .key(iface_name)
                 } else if *device_type == "router" {
-                    format!("routers->{device_name}->interfaces")
+                    YamlPath::new()
+                        .key("routers")
+                        .key(*device_name)
+                        .key("interfaces")
+                        .key(iface_name)
                 } else {
                     return Err(NetError::BasicError(format!(
                         "Unidentified device type {device_type}"
                     )));
-                };
-                format!("{device_name}->iface_name")
+                }
             }
             (_, _) => {
                 // TODO: Add more specified error checks.
@@ -157,7 +166,7 @@ impl FromYamlConfig for Interface {
             .extend(Self::parse_ip_addresses::<Ipv4Network>(
                 yaml_config,
                 "ipv4",
-                &iface_path,
+                &yaml_path.key("ipv4").unknown(),
             )?);
 
         // Get Ipv6 Addresses.
@@ -166,7 +175,7 @@ impl FromYamlConfig for Interface {
             .extend(Self::parse_ip_addresses::<Ipv6Network>(
                 yaml_config,
                 "ipv6",
-                &iface_path,
+                &yaml_path.key("ipv6").unknown(),
             )?);
         Ok(interface)
     }
@@ -221,10 +230,10 @@ impl Router {
     /// Creates a namespace representing the router and turns on the
     /// loopback interface.
     pub fn power_on(&mut self) -> NetResult<()> {
-        if let (net_path, pid_path) = mount_device(Some(self.name.clone()))? {
-            self.net_path = Some(net_path);
-            self.pid_path = Some(pid_path);
-        };
+        let (net_path, pid_path) = mount_device(Some(self.name.clone()))?;
+        self.net_path = Some(net_path);
+        self.pid_path = Some(pid_path);
+
         debug!(router=%self.name, "Powered on");
         Ok(())
     }
@@ -580,10 +589,11 @@ impl FromYamlConfig for Router {
                         Yaml::String(iface_name) => iface_name,
                         _ => {
                             return Err(ConfigError::IncorrectType {
-                                // TODO: Better format these outputs. Too ugly.
-                                field: format!(
-                                    "routers->{name}->interfaces->[??:config]"
-                                ),
+                                path: YamlPath::new()
+                                    .key("routers")
+                                    .key(name)
+                                    .key("interfaces")
+                                    .unknown(),
                                 expected: "string".to_string(),
                             }
                             .into());
@@ -612,9 +622,15 @@ impl FromYamlConfig for Router {
                         }
                         _ => {
                             return Err(ConfigError::IncorrectType {
-                                field: format!("routers->{name}->interfaces->{iface_name}->??"),
+                                path: YamlPath::new()
+                                    .key("routers")
+                                    .key(name)
+                                    .key("interfaces")
+                                    .key(iface_name)
+                                    .unknown(),
                                 expected: "hash".to_string(),
-                            }.into());
+                            }
+                            .into());
                         }
                     }
                 }
@@ -624,7 +640,11 @@ impl FromYamlConfig for Router {
             }
             Some(_) => {
                 return Err(ConfigError::IncorrectType {
-                    field: format!("routers->{name}->interfaces->??"),
+                    path: YamlPath::new()
+                        .key("routers")
+                        .key(name)
+                        .key("interfaces")
+                        .unknown(),
                     expected: "hash".to_string(),
                 }
                 .into());
@@ -646,7 +666,11 @@ impl FromYamlConfig for Router {
             Some(Yaml::Null) | None => { /* Ignore volume configs. */ }
             Some(_) => {
                 return Err(ConfigError::IncorrectType {
-                    field: format!("routers->{name}->volumes->??"),
+                    path: YamlPath::new()
+                        .key("routers")
+                        .key(name)
+                        .key("volumes")
+                        .unknown(),
                     expected: "hash".to_string(),
                 }
                 .into());
@@ -665,7 +689,12 @@ impl FromYamlConfig for Router {
             Some(Yaml::Null) | None => {}
             Some(_) => {
                 return Err(ConfigError::IncorrectType {
-                    field: format!("routers->{name}->scripts->??"),
+                    path: YamlPath::new()
+                        .key("routers")
+                        .key(name)
+                        .key("scripts")
+                        .unknown(),
+
                     expected: "array".to_string(),
                 }
                 .into());
@@ -758,9 +787,11 @@ impl FromYamlConfig for Switch {
                             }
                             _ => {
                                 return Err(ConfigError::IncorrectType {
-                                    field: format!(
-                                        "switches.switch[{switch_name}].interfaces[config??]"
-                                    ),
+                                    path: YamlPath::new()
+                                        .key("switches")
+                                        .key(switch_name)
+                                        .key("interfaces")
+                                        .unknown(),
                                     expected: "hash".to_string(),
                                 }
                                 .into());
@@ -768,9 +799,11 @@ impl FromYamlConfig for Switch {
                         },
                         _ => {
                             return Err(ConfigError::IncorrectType {
-                                field: format!(
-                                    "switches.switch[{switch_name}].interfaces[name??]"
-                                ),
+                                path: YamlPath::new()
+                                    .key("switches")
+                                    .key(switch_name)
+                                    .key("interfaces")
+                                    .unknown(),
                                 expected: "string".to_string(),
                             }
                             .into());
@@ -780,7 +813,10 @@ impl FromYamlConfig for Switch {
                 Ok(switch)
             }
             _ => Err(ConfigError::IncorrectType {
-                field: format!("switches.switch[{switch_name}][config??]"),
+                path: YamlPath::new()
+                    .key("switches")
+                    .key(switch_name)
+                    .unknown(),
                 expected: "hash".to_string(),
             }
             .into()),

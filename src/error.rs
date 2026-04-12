@@ -1,3 +1,5 @@
+use std::fmt;
+
 use ipnetwork::IpNetwork;
 use thiserror::Error as ThisError;
 use yaml_rust2::scanner::ScanError;
@@ -40,11 +42,11 @@ pub enum ConfigError {
     #[error("Node {0} has been configured multiple times.")]
     DuplicateNode(String),
 
-    #[error("Field {field} has incorrect type. Expected type '{expected}'.")]
-    IncorrectType { field: String, expected: String },
+    #[error("Field has incorrect type. Expected '{expected}':\n{path}")]
+    IncorrectType { path: YamlPath, expected: String },
 
-    #[error("Topology missing required field '{0}'.")]
-    MissingField(String),
+    #[error("Required field is missing:\n{path}")]
+    MissingField { path: YamlPath },
 
     #[error("Link references to unknown node {0}.")]
     UnknownNode(String),
@@ -52,13 +54,11 @@ pub enum ConfigError {
     #[error("Invalid YAML Syntax {0}.")]
     YamlSyntax(#[from] ScanError),
 
-    #[error(
-        "Invalid {addr_type} address '{address}' for interface '{interface}'."
-    )]
+    #[error("Invalid {addr_type} address '{address}' for interface:\n{path}")]
     InvalidAddress {
         addr_type: String,
         address: String,
-        interface: String,
+        path: YamlPath,
         #[source]
         source: ipnetwork::IpNetworkError,
     },
@@ -180,4 +180,46 @@ pub enum LinkError {
         #[source]
         source: rtnetlink::Error,
     },
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct YamlPath {
+    segments: Vec<PathSegment>,
+}
+
+#[derive(Debug, Clone)]
+enum PathSegment {
+    Key(String), // a named key:  "routers:"
+    Unknown,     // bad/missing:  "???"
+}
+
+impl YamlPath {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append a known key to the path.
+    pub fn key(&mut self, k: impl Into<String>) -> Self {
+        self.segments.push(PathSegment::Key(k.into()));
+        self.clone()
+    }
+
+    /// Append an "unknown/bad value" marker at the end.
+    pub fn unknown(&mut self) -> Self {
+        self.segments.push(PathSegment::Unknown);
+        self.clone()
+    }
+}
+
+impl fmt::Display for YamlPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (depth, segment) in self.segments.iter().enumerate() {
+            let indent = "  ".repeat(depth);
+            match segment {
+                PathSegment::Key(k) => writeln!(f, "{indent}{k}:")?,
+                PathSegment::Unknown => write!(f, "{indent}???")?,
+            }
+        }
+        Ok(())
+    }
 }

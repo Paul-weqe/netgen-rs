@@ -10,7 +10,7 @@ use yaml_rust2::yaml::Yaml;
 
 use crate::NetResult;
 use crate::devices::{FromYamlConfig, Link, LinkManager, Node, Router, Switch};
-use crate::error::{ConfigError, NetError};
+use crate::error::{ConfigError, NetError, YamlPath};
 
 // struct TopologyParser ====
 
@@ -129,7 +129,7 @@ impl TopologyParser {
                         Yaml::String(name) => name,
                         _ => {
                             return Err(ConfigError::IncorrectType {
-                                field: "routers->??".to_string(),
+                                path: YamlPath::new().key("routers").unknown(),
                                 expected: "string".to_string(),
                             }
                             .into());
@@ -141,7 +141,10 @@ impl TopologyParser {
                         Yaml::Null => None,
                         _ => {
                             return Err(ConfigError::IncorrectType {
-                                field: format!("routers->{}->??", &router_name),
+                                path: YamlPath::new()
+                                    .key("routers")
+                                    .key(router_name)
+                                    .unknown(),
                                 expected: "hash".to_string(),
                             }
                             .into());
@@ -162,7 +165,7 @@ impl TopologyParser {
             }
             Yaml::Null => Ok(routers),
             _ => Err(ConfigError::IncorrectType {
-                field: "routers->??".to_string(),
+                path: YamlPath::new().key("routers").unknown(),
                 expected: "hash".to_string(),
             }
             .into()),
@@ -180,7 +183,10 @@ impl TopologyParser {
                         Yaml::String(name) => name,
                         _ => {
                             return Err(ConfigError::IncorrectType {
-                                field: "switches.switch[name??]".to_string(),
+                                path: YamlPath::new()
+                                    .key("switches")
+                                    .key("switch")
+                                    .unknown(),
                                 expected: "string".to_string(),
                             }
                             .into());
@@ -191,9 +197,11 @@ impl TopologyParser {
                         Yaml::Hash(switch_config) => switch_config,
                         _ => {
                             return Err(ConfigError::IncorrectType {
-                                field: format!(
-                                    "switches.switch[{switch_name}][??]"
-                                ),
+                                path: YamlPath::new()
+                                    .key("switches")
+                                    .key("switch")
+                                    .key(switch_name)
+                                    .unknown(),
                                 expected: "hash".to_string(),
                             }
                             .into());
@@ -210,7 +218,7 @@ impl TopologyParser {
             }
             _ => {
                 return Err(ConfigError::IncorrectType {
-                    field: "switches[??]".to_string(),
+                    path: YamlPath::new().key("switches").unknown(),
                     expected: "hash".to_string(),
                 }
                 .into());
@@ -247,7 +255,7 @@ impl TopologyParser {
             }
         } else {
             return Err(ConfigError::IncorrectType {
-                field: "links.[??]".to_string(),
+                path: YamlPath::new().key("links").unknown(),
                 expected: "array".to_string(),
             }
             .into());
