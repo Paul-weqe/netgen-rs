@@ -5,4 +5,5 @@ start.sh
 stop.sh
 join.sh
 umount.sh
+login.sh
 .swp

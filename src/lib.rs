@@ -22,8 +22,10 @@ pub const NS_DIR: &str = "/tmp/netgen-rs/ns";
 pub const DEVICES_NS_DIR: &str = "/tmp/netgen-rs/ns/devices";
 pub const MAIN_NS_DIR: &str = "/tmp/netgen-rs/ns/main";
 
-// If we are trying to mount the main pid, we leave device_name as None
-pub fn mount_device(device_name: Option<String>) -> NetResult<String> {
+// Returns Ok(device_netns_path, device_pidns_path)
+pub fn mount_device(
+    device_name: Option<String>,
+) -> NetResult<(String, String)> {
     let device = DeviceDetails::new(device_name.clone());
     let clone_flags = match device_name {
         Some(_) => CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWPID,
@@ -62,7 +64,7 @@ pub fn mount_device(device_name: Option<String>) -> NetResult<String> {
     //Go back to main namespace
     enter_ns(None)?;
 
-    Ok(device.netns_path())
+    Ok((device.netns_path(), device.pidns_path()))
 }
 
 pub fn mount_router_volumes(router: &devices::Router) -> NetResult<()> {

@@ -201,7 +201,8 @@ pub(crate) struct Volume {
 #[derive(Clone, Debug, Default)]
 pub struct Router {
     pub name: String,
-    pub(crate) file_path: Option<String>,
+    pub(crate) net_path: Option<String>,
+    pub(crate) pid_path: Option<String>,
     pub(crate) interfaces: Vec<Interface>,
     pub(crate) volumes: Vec<Volume>,
     pub(crate) scripts: Vec<String>,
@@ -220,8 +221,10 @@ impl Router {
     /// Creates a namespace representing the router and turns on the
     /// loopback interface.
     pub fn power_on(&mut self) -> NetResult<()> {
-        let file_path = mount_device(Some(self.name.clone()))?;
-        self.file_path = Some(file_path);
+        if let (net_path, pid_path) = mount_device(Some(self.name.clone()))? {
+            self.net_path = Some(net_path);
+            self.pid_path = Some(pid_path);
+        };
         debug!(router=%self.name, "Powered on");
         Ok(())
     }
@@ -292,18 +295,33 @@ impl Router {
         Fut: FnOnce() -> T + Send + 'static,
         T: Future<Output = R> + Send,
     {
-        match &self.file_path {
-            Some(file_path) => {
+        match (&self.net_path, &self.pid_path) {
+            (Some(net_path), Some(pid_path)) => {
                 // Move into the Router namespace.
-                let ns_file =
-                    File::open(file_path.as_str()).map_err(|err| {
+                let netns_file =
+                    File::open(net_path.as_str()).map_err(|err| {
                         NamespaceError::FileOpen {
-                            path: file_path.clone(),
+                            path: net_path.clone(),
                             source: err,
                         }
                     })?;
 
-                setns(ns_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
+                let pidns_file =
+                    File::open(pid_path.as_str()).map_err(|err| {
+                        NamespaceError::FileOpen {
+                            path: net_path.clone(),
+                            source: err,
+                        }
+                    })?;
+
+                setns(netns_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
+                    |err| NamespaceError::Entry {
+                        device: self.name.clone(),
+                        source: err,
+                    },
+                )?;
+
+                setns(pidns_file.as_fd(), CloneFlags::CLONE_NEWPID).map_err(
                     |err| NamespaceError::Entry {
                         device: self.name.clone(),
                         source: err,
@@ -360,24 +378,40 @@ impl Router {
                 let result = (f)().await;
 
                 // Go back to the main namespace.
-                let main_ns_path = format!("{NS_DIR}/main/net");
+                let main_net_path = format!("{NS_DIR}/main/net");
+                let main_pid_path = format!("{NS_DIR}/main/pid");
 
-                let main_file = File::open(&main_ns_path).map_err(|err| {
-                    NetError::BasicError(format!(
-                        "Unable to open file {main_ns_path}: {err:?}"
-                    ))
-                })?;
+                let main_net_file =
+                    File::open(&main_net_path).map_err(|err| {
+                        NetError::BasicError(format!(
+                            "Unable to open file {main_net_path}: {err:?}"
+                        ))
+                    })?;
 
-                setns(main_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
-                    |err| {
+                let main_pid_file =
+                    File::open(&main_pid_path).map_err(|err| {
+                        NetError::BasicError(format!(
+                            "Unable to open file {main_pid_path}: {err:?}"
+                        ))
+                    })?;
+
+                setns(main_net_file.as_fd(), CloneFlags::CLONE_NEWNET)
+                    .map_err(|err| {
                         NetError::NamespaceError(NamespaceError::ReturnToMain {
                             source: err,
                         })
-                    },
-                )?;
+                    })?;
+
+                setns(main_pid_file.as_fd(), CloneFlags::CLONE_NEWPID)
+                    .map_err(|err| {
+                        NetError::NamespaceError(NamespaceError::ReturnToMain {
+                            source: err,
+                        })
+                    })?;
+
                 Ok(result)
             }
-            None => Err(NamespaceError::NotFound {
+            (_, _) => Err(NamespaceError::NotFound {
                 device: self.name.clone(),
             }
             .into()),
@@ -877,11 +911,11 @@ impl LinkManager {
                 Node::Router(router) => {
                     if let Ok(index) =
                         if_nametoindex(current_link_name.as_str())
-                        && let Some(file_path) = &router.file_path
+                        && let Some(net_path) = &router.net_path
                     {
-                        let file = File::open(file_path).map_err(|err| {
+                        let file = File::open(net_path).map_err(|err| {
                             NamespaceError::FileOpen {
-                                path: file_path.clone(),
+                                path: net_path.clone(),
                                 source: err,
                             }
                         })?;
