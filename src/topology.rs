@@ -152,6 +152,7 @@ impl TopologyParser {
                         Some(router_config) => Router::from_yaml_config(
                             router_name,
                             router_config,
+                            BTreeMap::new(),
                         )?,
                         None => Router::new(router_name),
                     };
@@ -199,8 +200,11 @@ impl TopologyParser {
                         }
                     };
 
-                    let switch =
-                        Switch::from_yaml_config(switch_name, switch_config)?;
+                    let switch = Switch::from_yaml_config(
+                        switch_name,
+                        switch_config,
+                        BTreeMap::new(),
+                    )?;
                     switches.push(switch);
                 }
             }

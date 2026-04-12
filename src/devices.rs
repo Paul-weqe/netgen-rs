@@ -1,11 +1,16 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::future::Future;
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::{AsFd, AsRawFd, RawFd};
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
+use nix::fcntl::{OFlag, open};
 use nix::net::if_::if_nametoindex;
 use nix::sched::{CloneFlags, setns};
+use nix::sys::stat::Mode;
+use nix::unistd::{ForkResult, dup2, fork, setsid};
 use rand::Rng;
 use rand::distributions::Alphanumeric;
 use rtnetlink::{Handle, LinkBridge, LinkUnspec, LinkVeth, new_connection};
@@ -20,7 +25,11 @@ use crate::{NS_DIR, NetResult, mount_device};
 // ==== trait FromYamlConfig ====
 
 pub trait FromYamlConfig: Sized {
-    fn from_yaml_config(name: &str, config: &Hash) -> NetResult<Self>;
+    fn from_yaml_config(
+        name: &str,
+        config: &Hash,
+        context: BTreeMap<&str, &str>,
+    ) -> NetResult<Self>;
 }
 
 // ==== struct Interface ====
@@ -38,6 +47,7 @@ impl Interface {
             addresses: vec![],
         }
     }
+
     async fn add_addresses(&self, handle: &Handle) -> NetResult<()> {
         let ifindex = match if_nametoindex(self.name.as_str()) {
             Ok(ifindex) => ifindex,
@@ -63,106 +73,101 @@ impl Interface {
         }
         Ok(())
     }
+
+    fn parse_ip_addresses<N>(
+        yaml_config: &Hash,
+        key: &str,
+        path_prefix: &str,
+    ) -> NetResult<Vec<IpNetwork>>
+    where
+        N: std::str::FromStr<Err = ipnetwork::IpNetworkError>,
+        IpNetwork: From<N>,
+    {
+        let Some(addr_list) = yaml_config.get(&Yaml::String(String::from(key)))
+        else {
+            return Ok(vec![]);
+        };
+
+        match addr_list {
+            Yaml::Array(entries) => entries
+                .iter()
+                .filter_map(|y| {
+                    if let Yaml::String(s) = y {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                })
+                .map(|addr_str| {
+                    addr_str.parse::<N>().map(IpNetwork::from).map_err(|err| {
+                        ConfigError::InvalidAddress {
+                            addr_type: key.to_string(),
+                            address: addr_str.to_string(),
+                            interface: format!("{path_prefix}->{key}->??"),
+                            source: err,
+                        }
+                        .into()
+                    })
+                })
+                .collect(),
+            Yaml::Null => Ok(vec![]),
+            _ => Err(ConfigError::IncorrectType {
+                field: format!("{path_prefix}->{key}->??"),
+                expected: "array".to_string(),
+            }
+            .into()),
+        }
+    }
 }
 
 impl FromYamlConfig for Interface {
-    fn from_yaml_config(name: &str, yaml_config: &Hash) -> NetResult<Self> {
-        let (router_name, iface_name) = match name.split_once("!!!!") {
-            Some((router_name, iface_name)) => (router_name, iface_name),
-            _ => {
+    fn from_yaml_config(
+        iface_name: &str,
+        yaml_config: &Hash,
+        iface_ctx: BTreeMap<&str, &str>,
+    ) -> NetResult<Self> {
+        let mut interface = Interface::new(iface_name.to_string());
+        let iface_path = match (
+            iface_ctx.get("device_name"),
+            iface_ctx.get("device_type"),
+        ) {
+            (Some(device_name), Some(device_type)) => {
+                let device_name = if *device_type == "switch" {
+                    format!("switches->{device_name}->interfaces")
+                } else if *device_type == "router" {
+                    format!("routers->{device_name}->interfaces")
+                } else {
+                    return Err(NetError::BasicError(format!(
+                        "Unidentified device type {device_type}"
+                    )));
+                };
+                format!("{device_name}->iface_name")
+            }
+            (_, _) => {
+                // TODO: Add more specified error checks.
                 return Err(NetError::BasicError(format!(
-                    "Improperly formatter name in Interface::from_yaml_config. \
-                    Received {name}.\
-                    Must be in the format {{router-name}}!!!!{{interface-name}}"
-                ))
-                .into());
+                    "device_name or device_type not specified for iface {iface_name}"
+                )));
             }
         };
-        let mut interface = Interface::new(iface_name.to_string());
-        let router_name = format!("routers->{router_name}->interfaces->");
-        let iface_name = format!("{router_name}->{iface_name}");
 
-        // --- Get the interface's Ipv4 addresses ---
-        if let Some(ipv4_addresses) =
-            yaml_config.get(&Yaml::String(String::from("ipv4")))
-        {
-            match ipv4_addresses {
-                Yaml::Array(ipv4_addresses) => {
-                    let mut addr_iter = ipv4_addresses.iter();
-                    while let Some(Yaml::String(addr_str)) = addr_iter.next() {
-                        match addr_str.parse::<Ipv4Network>() {
-                            Ok(ip_net) => {
-                                interface.addresses.push(IpNetwork::V4(ip_net));
-                            }
-                            Err(err) => {
-                                return Err(ConfigError::InvalidAddress {
-                                    addr_type: "ipv4".to_string(),
-                                    address: "addr_str".to_string(),
-                                    interface: format!(
-                                        "{iface_name}->ipv4->??"
-                                    ),
-                                    source: err,
-                                }
-                                .into());
-                            }
-                        }
-                    }
-                }
-                Yaml::Null => {
-                    // Ipv4 addresses list is blank.
-                }
-                _ => {
-                    return {
-                        Err(ConfigError::IncorrectType {
-                            field: format!("{iface_name}->ipv4??"),
-                            expected: "array".to_string(),
-                        }
-                        .into())
-                    };
-                }
-            }
-        }
+        // Get IPV4 Addresses.
+        interface
+            .addresses
+            .extend(Self::parse_ip_addresses::<Ipv4Network>(
+                yaml_config,
+                "ipv4",
+                &iface_path,
+            )?);
 
-        // --- Get the interface's Ipv6 addresses ---
-        if let Some(ipv6_addresses) =
-            yaml_config.get(&Yaml::String(String::from("ipv6")))
-        {
-            match ipv6_addresses {
-                Yaml::Array(ipv6_addresses) => {
-                    let mut addr_iter = ipv6_addresses.iter();
-                    while let Some(Yaml::String(addr_str)) = addr_iter.next() {
-                        match addr_str.parse::<Ipv6Network>() {
-                            Ok(ip_net) => {
-                                interface.addresses.push(IpNetwork::V6(ip_net));
-                            }
-                            Err(err) => {
-                                return Err(ConfigError::InvalidAddress {
-                                    addr_type: "ipv6".to_string(),
-                                    address: "addr_str".to_string(),
-                                    interface: format!(
-                                        "{iface_name}->ipv6->??"
-                                    ),
-                                    source: err,
-                                }
-                                .into());
-                            }
-                        }
-                    }
-                }
-                Yaml::Null => {
-                    // Ipv6 addresses list is blank.
-                }
-                _ => {
-                    return {
-                        Err(ConfigError::IncorrectType {
-                            field: format!("{iface_name}->ipv6??"),
-                            expected: "array".to_string(),
-                        }
-                        .into())
-                    };
-                }
-            }
-        }
+        // Get Ipv6 Addresses.
+        interface
+            .addresses
+            .extend(Self::parse_ip_addresses::<Ipv6Network>(
+                yaml_config,
+                "ipv6",
+                &iface_path,
+            )?);
         Ok(interface)
     }
 }
@@ -177,10 +182,10 @@ pub enum Node {
 
 impl Node {
     pub fn power_off(&self) -> NetResult<()> {
-        if let Self::Router(router) = self {
-            router.power_off()?;
+        match self {
+            Self::Router(router) => router.power_off(),
+            Self::Switch(_) => Ok(()), // briges are cleaned up via destroy_ns.
         }
-        Ok(())
     }
 }
 
@@ -199,6 +204,7 @@ pub struct Router {
     pub(crate) file_path: Option<String>,
     pub(crate) interfaces: Vec<Interface>,
     pub(crate) volumes: Vec<Volume>,
+    pub(crate) scripts: Vec<String>,
 }
 
 impl Router {
@@ -268,7 +274,7 @@ impl Router {
     /// async fn main() {
     ///     let router = Router::new("r1");
     ///     router
-    ///         .in_ns(move || async move {
+    ///         .in_ns(false, move || async move {
     ///             let output = Command::new("ip").args(vec!["link"]).output();
     ///
     ///             // this will show you the output
@@ -332,6 +338,102 @@ impl Router {
         }
     }
 
+    /// Like `in_ns`, but also sets up a private mount namespace with
+    /// the router's volumes mounted. This mirrors what `netgen login` does,
+    /// ensuring scripts see the same filesystem the user would see on login.
+    pub async fn in_ns_with_mounts<Fut, R>(
+        &self,
+        f: impl FnOnce() -> Fut + Send + 'static,
+    ) -> NetResult<R>
+    where
+        Fut: Future<Output = NetResult<R>> + Send,
+        R: Send + 'static,
+    {
+        match &self.file_path {
+            Some(file_path) => {
+                let ns_file =
+                    File::open(file_path.as_str()).map_err(|err| {
+                        NamespaceError::FileOpen {
+                            path: file_path.clone(),
+                            source: err,
+                        }
+                    })?;
+
+                // Enter the network namespace.
+                setns(ns_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
+                    |err| NamespaceError::Entry {
+                        device: self.name.clone(),
+                        source: err,
+                    },
+                )?;
+
+                // Unshare into a new mount namespace so our mounts
+                // don't leak to the host.
+                nix::sched::unshare(CloneFlags::CLONE_NEWNS).map_err(
+                    |err| NamespaceError::Unshare {
+                        ns_name: self.name.clone(),
+                        source: err,
+                    },
+                )?;
+
+                // Make all mounts private before remounting proc,
+                // same as what login does.
+                nix::mount::mount(
+                    None::<&str>,
+                    "/",
+                    None::<&str>,
+                    nix::mount::MsFlags::MS_PRIVATE
+                        | nix::mount::MsFlags::MS_REC,
+                    None::<&str>,
+                )
+                .map_err(|err| NamespaceError::Mount {
+                    ns_type: "private remount".to_string(),
+                    device: self.name.clone(),
+                    source: err,
+                })?;
+
+                // Remount /proc so it reflects the router's PID namespace.
+                nix::mount::mount(
+                    Some("proc"),
+                    "/proc",
+                    Some("proc"),
+                    nix::mount::MsFlags::empty(),
+                    None::<&str>,
+                )
+                .map_err(|err| NamespaceError::Mount {
+                    ns_type: "proc".to_string(),
+                    device: self.name.clone(),
+                    source: err,
+                })?;
+
+                crate::mount_router_volumes(self)?;
+                let result = (f)().await;
+
+                // Return to the main network namespace.
+                let main_ns_path = format!("{}/main/net", crate::NS_DIR);
+                let main_file = File::open(&main_ns_path).map_err(|err| {
+                    NetError::BasicError(format!(
+                        "Unable to open main ns file \
+                        {main_ns_path}: {err:?}"
+                    ))
+                })?;
+                setns(main_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
+                    |err| {
+                        NetError::NamespaceError(NamespaceError::ReturnToMain {
+                            source: err,
+                        })
+                    },
+                )?;
+
+                result
+            }
+            None => Err(NamespaceError::NotFound {
+                device: self.name.clone(),
+            }
+            .into()),
+        }
+    }
+
     /// adds the addresses of the said router as
     /// per the topology yaml file.
     ///
@@ -373,10 +475,116 @@ impl Router {
             .await?
         })
     }
+
+    pub fn run_scripts(&self, runtime: &Runtime) -> NetResult<()> {
+        if self.scripts.is_empty() {
+            return Ok(());
+        }
+
+        let scripts = self.scripts.clone();
+        //let volumes = self.volumes.clone();
+        let router_name = self.name.clone();
+
+        runtime.block_on(async {
+            self.in_ns_with_mounts(move || async move {
+                for script in &scripts {
+                    debug!(
+                        router = %router_name,
+                        script = %script,
+                        "Running script"
+                    );
+
+                    let mut parts: Vec<&str> =
+                        script.split_whitespace().collect();
+
+                    // Commands that are meant to run in background end with '&',
+                    // We run the commands in background by default, so no need
+                    // for that.
+                    if parts.last() == Some(&"&") {
+                        parts.pop();
+                    }
+
+                    // Check if it is meant to be a background task.
+                    if parts.is_empty() {
+                        continue;
+                    };
+                    let executable = parts[0];
+                    Self::spawn_detached(executable, &parts[1..])?;
+
+                    debug!(
+                        router = %router_name,
+                        script = %script,
+                        "Script completed"
+                    );
+                }
+                Ok(())
+            })
+            .await?;
+            Ok(())
+        })
+    }
+
+    fn spawn_detached(cmd: &str, args: &[&str]) -> NetResult<()> {
+        match unsafe { fork() } {
+            Ok(ForkResult::Parent { .. }) => {
+                // Parent: just return immediately
+                return Ok(());
+            }
+
+            Ok(ForkResult::Child) => {
+                // Detach from terminal & session.
+                setsid().map_err(|err|
+                    NetError::BasicError(
+                        format!("Unable to detach from terminal for {cmd} {args:?} -> {err:?}")
+                    )
+                )?;
+
+                match unsafe { fork() } {
+                    Ok(ForkResult::Parent { .. }) => {
+                        // Exits to prevent zombies.
+                        std::process::exit(0);
+                    }
+
+                    Ok(ForkResult::Child) => {
+                        let _ = std::env::set_current_dir("/");
+
+                        // Redirect stdio → /dev/null
+                        let devnull: RawFd =
+                            open("/dev/null", OFlag::O_RDWR, Mode::empty())
+                                .unwrap();
+                        // TODO: Handle these unwraps
+                        dup2(devnull, 0).unwrap();
+                        dup2(devnull, 1).unwrap();
+                        dup2(devnull, 2).unwrap();
+
+                        // Execute command (no extra process layer!)
+                        let _ = Command::new(cmd).args(args).exec();
+
+                        unreachable!();
+                    }
+                    Err(err) => {
+                        return Err(NetError::BasicError(format!(
+                            "Problem creating detached command {cmd} {args:?} : {err:?}"
+                        )));
+                    }
+                }
+            }
+            Err(err) => {
+                return Err(NetError::BasicError(format!(
+                    "Problem creating spawn_detached {err:?}"
+                )))
+                .into();
+            }
+        }
+    }
 }
 
 impl FromYamlConfig for Router {
-    fn from_yaml_config(name: &str, router_config: &Hash) -> NetResult<Self> {
+    fn from_yaml_config(
+        name: &str,
+        router_config: &Hash,
+        _router_ctx: BTreeMap<&str, &str>,
+    ) -> NetResult<Self> {
         let mut router = Self::new(name);
 
         // Router Interface Configurations.
@@ -399,14 +607,15 @@ impl FromYamlConfig for Router {
 
                     match iface_config {
                         Yaml::Hash(iface_config) => {
-                            // HACK: introduced !!!! as a delimiter. Hopfully
-                            // nobody uses that as part of an interface name in
-                            // future lol.
-                            let name = format!("{name}!!!!{iface_name}");
                             let interface = Interface::from_yaml_config(
-                                &name,
+                                &iface_name,
                                 iface_config,
+                                BTreeMap::from([
+                                    ("device_name", name),
+                                    ("device_type", "router"),
+                                ]),
                             )?;
+
                             router.interfaces.push(interface);
                         }
                         Yaml::Null => {
@@ -454,6 +663,25 @@ impl FromYamlConfig for Router {
                 return Err(ConfigError::IncorrectType {
                     field: format!("routers->{name}->volumes->??"),
                     expected: "hash".to_string(),
+                }
+                .into());
+            }
+        }
+
+        // Router Scripts Configurations.
+        match router_config.get(&Yaml::String(String::from("scripts"))) {
+            Some(Yaml::Array(script_configs)) => {
+                for script in script_configs {
+                    if let Yaml::String(path) = script {
+                        router.scripts.push(path.clone());
+                    }
+                }
+            }
+            Some(Yaml::Null) | None => {}
+            Some(_) => {
+                return Err(ConfigError::IncorrectType {
+                    field: format!("routers->{name}->scripts->??"),
+                    expected: "array".to_string(),
                 }
                 .into());
             }
@@ -523,6 +751,7 @@ impl FromYamlConfig for Switch {
     fn from_yaml_config(
         switch_name: &str,
         switch_config: &Hash,
+        _switch_ctx: BTreeMap<&str, &str>,
     ) -> NetResult<Self> {
         let mut switch = Self::new(switch_name);
 
@@ -532,11 +761,13 @@ impl FromYamlConfig for Switch {
                     match iface_name {
                         Yaml::String(iface_name) => match iface_config {
                             Yaml::Hash(iface_config) => {
-                                let iface_name =
-                                    format!("{switch_name}!!!!{iface_name}");
                                 let interface = Interface::from_yaml_config(
                                     &iface_name,
                                     iface_config,
+                                    BTreeMap::from([
+                                        ("device_name", switch_name),
+                                        ("device_type", "switch"),
+                                    ]),
                                 )?;
                                 switch.interfaces.push(interface);
                             }
@@ -598,6 +829,14 @@ impl LinkManager {
         for node in nodes.values() {
             if let Node::Router(router) = node {
                 router.add_iface_addresses(runtime)?;
+            }
+        }
+
+        // Scripts run after addresses in case any of them needs the address or
+        // a running & reachable network interface.
+        for node in nodes.values() {
+            if let Node::Router(router) = node {
+                router.run_scripts(runtime)?;
             }
         }
         Ok(())
