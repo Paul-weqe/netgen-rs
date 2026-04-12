@@ -9,8 +9,9 @@ use yaml_rust2::YamlLoader;
 use yaml_rust2::yaml::Yaml;
 
 use crate::NetResult;
-use crate::devices::{FromYamlConfig, Link, LinkManager, Node, Router, Switch};
+use crate::devices::{Link, LinkManager, Node, Router, Switch};
 use crate::error::{ConfigError, NetError, YamlPath};
+use crate::parser::{FromYamlConfig, get_string_field};
 
 // struct TopologyParser ====
 
@@ -233,22 +234,16 @@ impl TopologyParser {
             for link_config in configs {
                 if let Yaml::Hash(link_config) = link_config {
                     let link = Link {
-                        src_device: crate::get_string_field(
+                        src_device: get_string_field(
                             link_config,
                             "src-device",
                         )?,
-                        src_iface: crate::get_string_field(
-                            link_config,
-                            "src-iface",
-                        )?,
-                        dst_device: crate::get_string_field(
+                        src_iface: get_string_field(link_config, "src-iface")?,
+                        dst_device: get_string_field(
                             link_config,
                             "dst-device",
                         )?,
-                        dst_iface: crate::get_string_field(
-                            link_config,
-                            "dst-iface",
-                        )?,
+                        dst_iface: get_string_field(link_config, "dst-iface")?,
                     };
                     links.push(link);
                 }

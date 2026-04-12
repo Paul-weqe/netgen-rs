@@ -1,6 +1,6 @@
 pub mod devices;
-
 pub mod error;
+pub mod parser;
 pub mod topology;
 
 use std::fs;
@@ -9,13 +9,12 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use error::{ConfigError, NamespaceError, NetError, YamlPath};
+use error::{NamespaceError, NetError};
 use nix::mount::{MsFlags, mount, umount};
 use nix::sched::{CloneFlags, setns, unshare};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::{ForkResult, Pid, fork, pause};
 use tracing::{debug, error};
-use yaml_rust2::yaml::{Hash, Yaml};
 
 pub type NetResult<T> = std::result::Result<T, error::NetError>;
 
@@ -350,29 +349,6 @@ pub fn find_pid_from_mountpoint(mountpoint: &str) -> Option<i32> {
         }
     }
     None
-}
-
-// Get field value from Yaml Hash.
-// TODO: have this better positioned with other YANG configs methods.
-pub(crate) fn get_string_field(
-    config: &Hash,
-    field: &str,
-) -> NetResult<String> {
-    let field_value =
-        config
-            .get(&Yaml::String(field.to_string()))
-            .ok_or_else(|| ConfigError::MissingField {
-                path: YamlPath::new().key(field).unknown(),
-            })?;
-
-    match field_value {
-        Yaml::String(value) => Ok(value.to_string()),
-        _ => Err(ConfigError::IncorrectType {
-            path: YamlPath::new().key(field).unknown(),
-            expected: "string".to_string(),
-        }
-        .into()),
-    }
 }
 
 // ==== struct DeviceDetails ====
