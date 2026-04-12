@@ -230,7 +230,7 @@ impl Router {
     pub fn iface_up(&self, ifindex: u32, runtime: &Runtime) -> NetResult<()> {
         let router_name = self.name.clone();
         runtime.block_on(async {
-            self.in_ns(move || async move {
+            self.in_ns(false, move || async move {
                 let (connection, handle, _) =
                     new_connection().map_err(|err| {
                         LinkError::ConnectionFailed { source: err }
@@ -287,7 +287,7 @@ impl Router {
     ///         .await;
     /// }
     /// ```
-    pub async fn in_ns<Fut, T, R>(&self, f: Fut) -> NetResult<R>
+    pub async fn in_ns<Fut, T, R>(&self, is_mount: bool, f: Fut) -> NetResult<R>
     where
         Fut: FnOnce() -> T + Send + 'static,
         T: Future<Output = R> + Send,
@@ -310,17 +310,63 @@ impl Router {
                     },
                 )?;
 
+                if is_mount {
+                    // Unshare into a new mount namespace so our mounts
+                    // don't leak to the host.
+                    nix::sched::unshare(CloneFlags::CLONE_NEWNS).map_err(
+                        |err| NamespaceError::Unshare {
+                            ns_name: self.name.clone(),
+                            source: err,
+                        },
+                    )?;
+
+                    // Make all mounts private before remounting proc,
+                    // same as what login does.
+                    nix::mount::mount(
+                        None::<&str>,
+                        "/",
+                        None::<&str>,
+                        nix::mount::MsFlags::MS_PRIVATE
+                            | nix::mount::MsFlags::MS_REC,
+                        None::<&str>,
+                    )
+                    .map_err(|err| {
+                        NamespaceError::Mount {
+                            ns_type: "private remount".to_string(),
+                            device: self.name.clone(),
+                            source: err,
+                        }
+                    })?;
+
+                    // Remount /proc so it reflects the router's PID namespace.
+                    nix::mount::mount(
+                        Some("proc"),
+                        "/proc",
+                        Some("proc"),
+                        nix::mount::MsFlags::empty(),
+                        None::<&str>,
+                    )
+                    .map_err(|err| {
+                        NamespaceError::Mount {
+                            ns_type: "proc".to_string(),
+                            device: self.name.clone(),
+                            source: err,
+                        }
+                    })?;
+
+                    crate::mount_router_volumes(self)?;
+                }
+
                 let result = (f)().await;
 
                 // Go back to the main namespace.
-                let main_namespace_path = format!("{NS_DIR}/main/net");
+                let main_ns_path = format!("{NS_DIR}/main/net");
 
-                let main_file =
-                    File::open(&main_namespace_path).map_err(|err| {
-                        NetError::BasicError(format!(
-                            "Unable to open file {main_namespace_path}: {err:?}"
-                        ))
-                    })?;
+                let main_file = File::open(&main_ns_path).map_err(|err| {
+                    NetError::BasicError(format!(
+                        "Unable to open file {main_ns_path}: {err:?}"
+                    ))
+                })?;
 
                 setns(main_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
                     |err| {
@@ -330,102 +376,6 @@ impl Router {
                     },
                 )?;
                 Ok(result)
-            }
-            None => Err(NamespaceError::NotFound {
-                device: self.name.clone(),
-            }
-            .into()),
-        }
-    }
-
-    /// Like `in_ns`, but also sets up a private mount namespace with
-    /// the router's volumes mounted. This mirrors what `netgen login` does,
-    /// ensuring scripts see the same filesystem the user would see on login.
-    pub async fn in_ns_with_mounts<Fut, R>(
-        &self,
-        f: impl FnOnce() -> Fut + Send + 'static,
-    ) -> NetResult<R>
-    where
-        Fut: Future<Output = NetResult<R>> + Send,
-        R: Send + 'static,
-    {
-        match &self.file_path {
-            Some(file_path) => {
-                let ns_file =
-                    File::open(file_path.as_str()).map_err(|err| {
-                        NamespaceError::FileOpen {
-                            path: file_path.clone(),
-                            source: err,
-                        }
-                    })?;
-
-                // Enter the network namespace.
-                setns(ns_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
-                    |err| NamespaceError::Entry {
-                        device: self.name.clone(),
-                        source: err,
-                    },
-                )?;
-
-                // Unshare into a new mount namespace so our mounts
-                // don't leak to the host.
-                nix::sched::unshare(CloneFlags::CLONE_NEWNS).map_err(
-                    |err| NamespaceError::Unshare {
-                        ns_name: self.name.clone(),
-                        source: err,
-                    },
-                )?;
-
-                // Make all mounts private before remounting proc,
-                // same as what login does.
-                nix::mount::mount(
-                    None::<&str>,
-                    "/",
-                    None::<&str>,
-                    nix::mount::MsFlags::MS_PRIVATE
-                        | nix::mount::MsFlags::MS_REC,
-                    None::<&str>,
-                )
-                .map_err(|err| NamespaceError::Mount {
-                    ns_type: "private remount".to_string(),
-                    device: self.name.clone(),
-                    source: err,
-                })?;
-
-                // Remount /proc so it reflects the router's PID namespace.
-                nix::mount::mount(
-                    Some("proc"),
-                    "/proc",
-                    Some("proc"),
-                    nix::mount::MsFlags::empty(),
-                    None::<&str>,
-                )
-                .map_err(|err| NamespaceError::Mount {
-                    ns_type: "proc".to_string(),
-                    device: self.name.clone(),
-                    source: err,
-                })?;
-
-                crate::mount_router_volumes(self)?;
-                let result = (f)().await;
-
-                // Return to the main network namespace.
-                let main_ns_path = format!("{}/main/net", crate::NS_DIR);
-                let main_file = File::open(&main_ns_path).map_err(|err| {
-                    NetError::BasicError(format!(
-                        "Unable to open main ns file \
-                        {main_ns_path}: {err:?}"
-                    ))
-                })?;
-                setns(main_file.as_fd(), CloneFlags::CLONE_NEWNET).map_err(
-                    |err| {
-                        NetError::NamespaceError(NamespaceError::ReturnToMain {
-                            source: err,
-                        })
-                    },
-                )?;
-
-                result
             }
             None => Err(NamespaceError::NotFound {
                 device: self.name.clone(),
@@ -457,7 +407,7 @@ impl Router {
         let router_name = self.name.clone();
 
         runtime.block_on(async {
-            self.in_ns(move || async move {
+            self.in_ns(false, move || async move {
                 let (connection, handle, _) =
                     new_connection().map_err(|err| {
                         LinkError::ConnectionFailed { source: err }
@@ -486,7 +436,7 @@ impl Router {
         let router_name = self.name.clone();
 
         runtime.block_on(async {
-            self.in_ns_with_mounts(move || async move {
+            self.in_ns(true, move || async move {
                 for script in &scripts {
                     debug!(
                         router = %router_name,
@@ -517,10 +467,11 @@ impl Router {
                         "Script completed"
                     );
                 }
-                Ok(())
+                Ok::<(), NetError>(())
             })
-            .await?;
-            Ok(())
+            .await?
+            //    ;
+            //Ok(())
         })
     }
 
@@ -949,7 +900,7 @@ impl LinkManager {
 
                         // Rename the interface to it's proper name.
                         router
-                            .in_ns(move || async move {
+                            .in_ns(false, move || async move {
                                 let (conn, handle, _) = new_connection()
                                     .map_err(|err| {
                                         LinkError::ConnectionFailed {
