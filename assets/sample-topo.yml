@@ -3,6 +3,8 @@ routers:
     interfaces:
       lo: [ 1.1.1.1/32 ]
       eth-sw1: [ 10.0.1.1/24 ]
+    volumes:
+      - tmp/src/:tmp/dst
 
   rt2:
     interfaces:

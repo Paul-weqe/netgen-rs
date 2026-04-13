@@ -85,13 +85,13 @@ impl FromYamlConfig for Router {
         // Router Volume Configurations.
         match router_config.get(&Yaml::String(String::from("volumes"))) {
             Some(Yaml::Array(volumes_configs)) => {
-                for config in volumes_configs {
-                    if let Yaml::Hash(config) = config {
-                        let src = get_string_field(&config, "src")?;
-                        let dst = get_string_field(&config, "dst")?;
-
-                        router.volumes.push(Volume { src, dst });
-                    }
+                for volume_config in volumes_configs {
+                    let volume = Volume::from_yaml_config(
+                        router.name.as_str(),
+                        volume_config,
+                        BTreeMap::new(),
+                    )?;
+                    router.volumes.push(volume);
                 }
             }
             Some(Yaml::Null) | None => { /* Ignore volume configs. */ }
@@ -288,6 +288,47 @@ impl FromYamlConfig for Interface {
         }
 
         Ok(interface)
+    }
+}
+
+// ==== impl Volume ====
+
+impl FromYamlConfig for Volume {
+    fn from_yaml_config(
+        router_name: &str,
+        volume_config: &Yaml,
+        _router_ctx: BTreeMap<&str, &str>,
+    ) -> NetResult<Self> {
+        if let Yaml::Hash(map) = volume_config {
+            if let Some((Yaml::String(src), Yaml::String(dst))) =
+                map.iter().next()
+            {
+                return Ok(Volume {
+                    src: src.to_string(),
+                    dst: dst.to_string(),
+                });
+            } else {
+                return Err(ConfigError::IncorrectType {
+                    path: YamlPath::new()
+                        .key("routers")
+                        .key(router_name)
+                        .key("volumes")
+                        .unknown(),
+                    expected: "'string':'string'".to_string(),
+                }
+                .into());
+            }
+        } else {
+            return Err(ConfigError::IncorrectType {
+                path: YamlPath::new()
+                    .key("routers")
+                    .key(router_name)
+                    .key("volumes")
+                    .unknown(),
+                expected: "array".to_string(),
+            }
+            .into());
+        }
     }
 }
 
