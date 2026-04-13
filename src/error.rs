@@ -54,9 +54,8 @@ pub enum ConfigError {
     #[error("Invalid YAML Syntax {0}.")]
     YamlSyntax(#[from] ScanError),
 
-    #[error("Invalid {addr_type} address '{address}' for interface:\n{path}")]
+    #[error("Invalid address '{address}' for interface:\n{path}")]
     InvalidAddress {
-        addr_type: String,
         address: String,
         path: YamlPath,
         #[source]

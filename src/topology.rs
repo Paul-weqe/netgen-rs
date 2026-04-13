@@ -137,29 +137,11 @@ impl TopologyParser {
                         }
                     };
 
-                    let router_config = match router_config {
-                        Yaml::Hash(router_config) => Some(router_config),
-                        Yaml::Null => None,
-                        _ => {
-                            return Err(ConfigError::IncorrectType {
-                                path: YamlPath::new()
-                                    .key("routers")
-                                    .key(router_name)
-                                    .unknown(),
-                                expected: "hash".to_string(),
-                            }
-                            .into());
-                        }
-                    };
-
-                    let router = match router_config {
-                        Some(router_config) => Router::from_yaml_config(
-                            router_name,
-                            router_config,
-                            BTreeMap::new(),
-                        )?,
-                        None => Router::new(router_name),
-                    };
+                    let router = Router::from_yaml_config(
+                        router_name,
+                        router_config,
+                        BTreeMap::new(),
+                    )?;
                     routers.push(router);
                 }
                 Ok(routers)
@@ -189,21 +171,6 @@ impl TopologyParser {
                                     .key("switch")
                                     .unknown(),
                                 expected: "string".to_string(),
-                            }
-                            .into());
-                        }
-                    };
-
-                    let switch_config = match switch_config {
-                        Yaml::Hash(switch_config) => switch_config,
-                        _ => {
-                            return Err(ConfigError::IncorrectType {
-                                path: YamlPath::new()
-                                    .key("switches")
-                                    .key("switch")
-                                    .key(switch_name)
-                                    .unknown(),
-                                expected: "hash".to_string(),
                             }
                             .into());
                         }

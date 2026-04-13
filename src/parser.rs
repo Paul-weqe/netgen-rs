@@ -1,8 +1,7 @@
 use std::collections::BTreeMap;
 
-use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
-use yaml_rust2::Yaml;
-use yaml_rust2::yaml::Hash;
+use ipnetwork::IpNetwork;
+use yaml_rust2::yaml::{Hash, Yaml};
 
 use crate::NetResult;
 use crate::devices::{Interface, Router, Switch, Volume};
@@ -13,7 +12,7 @@ use crate::error::{ConfigError, NetError, YamlPath};
 pub(crate) trait FromYamlConfig: Sized {
     fn from_yaml_config(
         name: &str,
-        config: &Hash,
+        config: &Yaml,
         context: BTreeMap<&str, &str>,
     ) -> NetResult<Self>;
 }
@@ -23,11 +22,20 @@ pub(crate) trait FromYamlConfig: Sized {
 impl FromYamlConfig for Router {
     fn from_yaml_config(
         name: &str,
-        router_config: &Hash,
+        router_config: &Yaml,
         _router_ctx: BTreeMap<&str, &str>,
     ) -> NetResult<Self> {
-        let mut router = Self::new(name);
+        let router_config = if let Yaml::Hash(router_config) = router_config {
+            router_config
+        } else {
+            return Err(ConfigError::IncorrectType {
+                path: YamlPath::new().key("routers").key(name).unknown(),
+                expected: "hash".to_string(),
+            }
+            .into());
+        };
 
+        let mut router = Self::new(name);
         // Router Interface Configurations.
         match router_config.get(&Yaml::String(String::from("interfaces"))) {
             Some(Yaml::Hash(interfaces_config)) => {
@@ -47,39 +55,15 @@ impl FromYamlConfig for Router {
                         }
                     };
 
-                    match iface_config {
-                        Yaml::Hash(iface_config) => {
-                            let interface = Interface::from_yaml_config(
-                                &iface_name,
-                                iface_config,
-                                BTreeMap::from([
-                                    ("device_name", name),
-                                    ("device_type", "router"),
-                                ]),
-                            )?;
-
-                            router.interfaces.push(interface);
-                        }
-                        Yaml::Null => {
-                            // TODO: Make sure interface come up successfully
-                            // on this config branch.
-                            let interface =
-                                Interface::new(iface_name.to_string());
-                            router.interfaces.push(interface);
-                        }
-                        _ => {
-                            return Err(ConfigError::IncorrectType {
-                                path: YamlPath::new()
-                                    .key("routers")
-                                    .key(name)
-                                    .key("interfaces")
-                                    .key(iface_name)
-                                    .unknown(),
-                                expected: "hash".to_string(),
-                            }
-                            .into());
-                        }
-                    }
+                    let interface = Interface::from_yaml_config(
+                        &iface_name,
+                        iface_config,
+                        BTreeMap::from([
+                            ("device_name", name),
+                            ("device_type", "router"),
+                        ]),
+                    )?;
+                    router.interfaces.push(interface);
                 }
             }
             Some(Yaml::Null) | None => {
@@ -168,39 +152,39 @@ impl FromYamlConfig for Switch {
     /// converted into a yaml_rust2::yaml::Hash;
     fn from_yaml_config(
         switch_name: &str,
-        switch_config: &Hash,
+        switch_config: &Yaml,
         _switch_ctx: BTreeMap<&str, &str>,
     ) -> NetResult<Self> {
+        let switch_config = if let Yaml::Hash(switch_config) = switch_config {
+            switch_config
+        } else {
+            return Err(ConfigError::IncorrectType {
+                path: YamlPath::new()
+                    .key("switches")
+                    .key(switch_name)
+                    .unknown(),
+                expected: "hash".to_string(),
+            }
+            .into());
+        };
+
         let mut switch = Self::new(switch_name);
 
         match switch_config.get(&Yaml::String(String::from("interfaces"))) {
             Some(Yaml::Hash(interfaces_config)) => {
                 for (iface_name, iface_config) in interfaces_config {
                     match iface_name {
-                        Yaml::String(iface_name) => match iface_config {
-                            Yaml::Hash(iface_config) => {
-                                let interface = Interface::from_yaml_config(
-                                    &iface_name,
-                                    iface_config,
-                                    BTreeMap::from([
-                                        ("device_name", switch_name),
-                                        ("device_type", "switch"),
-                                    ]),
-                                )?;
-                                switch.interfaces.push(interface);
-                            }
-                            _ => {
-                                return Err(ConfigError::IncorrectType {
-                                    path: YamlPath::new()
-                                        .key("switches")
-                                        .key(switch_name)
-                                        .key("interfaces")
-                                        .unknown(),
-                                    expected: "hash".to_string(),
-                                }
-                                .into());
-                            }
-                        },
+                        Yaml::String(iface_name) => {
+                            let interface = Interface::from_yaml_config(
+                                &iface_name,
+                                iface_config,
+                                BTreeMap::from([
+                                    ("device_name", switch_name),
+                                    ("device_type", "switch"),
+                                ]),
+                            )?;
+                            switch.interfaces.push(interface);
+                        }
                         _ => {
                             return Err(ConfigError::IncorrectType {
                                 path: YamlPath::new()
@@ -233,11 +217,10 @@ impl FromYamlConfig for Switch {
 impl FromYamlConfig for Interface {
     fn from_yaml_config(
         iface_name: &str,
-        yaml_config: &Hash,
+        iface_config: &Yaml,
         iface_ctx: BTreeMap<&str, &str>,
     ) -> NetResult<Self> {
-        let mut interface = Interface::new(iface_name.to_string());
-        let mut yaml_path = match (
+        let yaml_path = match (
             iface_ctx.get("device_name"),
             iface_ctx.get("device_type"),
         ) {
@@ -268,69 +251,43 @@ impl FromYamlConfig for Interface {
             }
         };
 
-        // Get IPV4 Addresses.
-        interface
-            .addresses
-            .extend(parse_ip_addresses::<Ipv4Network>(
-                yaml_config,
-                "ipv4",
-                &yaml_path.key("ipv4").unknown(),
-            )?);
-
-        // Get Ipv6 Addresses.
-        interface
-            .addresses
-            .extend(parse_ip_addresses::<Ipv6Network>(
-                yaml_config,
-                "ipv6",
-                &yaml_path.key("ipv6").unknown(),
-            )?);
-        Ok(interface)
-    }
-}
-
-fn parse_ip_addresses<N>(
-    yaml_config: &Hash,
-    key: &str,
-    path: &YamlPath,
-) -> NetResult<Vec<IpNetwork>>
-where
-    N: std::str::FromStr<Err = ipnetwork::IpNetworkError>,
-    IpNetwork: From<N>,
-{
-    let Some(addr_list) = yaml_config.get(&Yaml::String(String::from(key)))
-    else {
-        return Ok(vec![]);
-    };
-
-    match addr_list {
-        Yaml::Array(entries) => entries
-            .iter()
-            .filter_map(|y| {
-                if let Yaml::String(s) = y {
-                    Some(s)
-                } else {
-                    None
+        // Confirm Yaml config type.
+        let mut interface = Interface::new(iface_name.to_string());
+        let addr_array = match iface_config {
+            Yaml::Array(addr_array) => addr_array,
+            Yaml::Null => {
+                return Ok(interface);
+            }
+            _ => {
+                return Err(ConfigError::IncorrectType {
+                    path: yaml_path.clone(),
+                    expected: "array".to_string(),
                 }
-            })
-            .map(|addr_str| {
-                addr_str.parse::<N>().map(IpNetwork::from).map_err(|err| {
-                    ConfigError::InvalidAddress {
-                        addr_type: key.to_string(),
-                        address: addr_str.to_string(),
-                        path: path.clone(),
-                        source: err,
-                    }
-                    .into()
-                })
-            })
-            .collect(),
-        Yaml::Null => Ok(vec![]),
-        _ => Err(ConfigError::IncorrectType {
-            path: path.clone(),
-            expected: "array".to_string(),
+                .into());
+            }
+        };
+
+        for addr in addr_array {
+            if let Yaml::String(addr_str) = addr {
+                let ip: IpNetwork =
+                    addr_str.as_str().parse().map_err(|err| {
+                        ConfigError::InvalidAddress {
+                            address: addr_str.to_string(),
+                            path: yaml_path.clone(),
+                            source: err,
+                        }
+                    })?;
+                interface.addresses.push(ip);
+            } else {
+                return Err(ConfigError::IncorrectType {
+                    path: yaml_path,
+                    expected: "string".to_string(),
+                }
+                .into());
+            }
         }
-        .into()),
+
+        Ok(interface)
     }
 }
 
