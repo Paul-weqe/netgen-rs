@@ -420,8 +420,6 @@ impl Router {
                     }
 
                     Ok(ForkResult::Child) => {
-                        let _ = std::env::set_current_dir("/");
-
                         // Redirect stdio → /dev/null
                         let devnull: RawFd =
                             open("/dev/null", OFlag::O_RDWR, Mode::empty())
