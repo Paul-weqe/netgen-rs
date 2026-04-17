@@ -3,11 +3,11 @@ pub mod error;
 pub mod parser;
 pub mod topology;
 
-use std::fs;
 use std::fs::{File, create_dir_all, remove_dir_all};
 use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::{fs, io};
 
 use error::{NamespaceError, NetError};
 use nix::mount::{MsFlags, mount, umount};
@@ -85,9 +85,26 @@ fn mount_volume(device_name: &str, volume: &devices::Volume) -> NetResult<()> {
         return Err(err);
     }
 
+    // Derive a stable staging path from the destination.
+    let binding = match src_path.file_name() {
+        Some(src_path_str) => PathBuf::from(format!(
+            "/tmp/netgen-rs/ns/devices/{device_name}/vols/{}",
+            src_path_str.to_string_lossy()
+        )),
+        None => src_path.to_path_buf(),
+    };
+    let staging_path = binding.as_path();
+
     // Create dst path if it doesn't exist.
     if !dst_path.exists() {
         if src_path.is_file() {
+            // Copy file to staging path.
+            if src_path != staging_path {
+                fs::copy(&src_path, staging_path).map_err(|err| {
+                    NetError::BasicError(format!("Unable to copy {src_path:?} to {staging_path:?}\n{err:?}"))
+                })?;
+            }
+
             let parent = dst_path.parent().unwrap();
             fs::create_dir_all(parent).map_err(|err| {
                 NetError::BasicError(format!(
@@ -102,6 +119,15 @@ fn mount_volume(device_name: &str, volume: &devices::Volume) -> NetResult<()> {
                 ))
             })?;
         } else if src_path.is_dir() {
+            // Copy to staging directory.
+            if src_path != staging_path {
+                copy_dir_all(&src_path, staging_path).map_err(|err| {
+                    NetError::BasicError(format!(
+                        "Unable to copy {src_path:?} to {staging_path:?}\n{err:?}"
+                    ))
+                })?;
+            }
+
             fs::create_dir_all(dst_path).map_err(|err| {
                 NetError::BasicError(format!(
                     "Unable to create volume path {:?}: {err:?}",
@@ -112,7 +138,7 @@ fn mount_volume(device_name: &str, volume: &devices::Volume) -> NetResult<()> {
     }
 
     mount(
-        Some(src_path),
+        Some(staging_path),
         dst_path,
         None::<&str>,
         MsFlags::MS_BIND | MsFlags::MS_REC,
@@ -125,6 +151,33 @@ fn mount_volume(device_name: &str, volume: &devices::Volume) -> NetResult<()> {
             source: err,
         })
     })?;
+
+    Ok(())
+}
+
+fn copy_dir_all(
+    src: impl AsRef<Path>,
+    dst: impl AsRef<Path>,
+) -> io::Result<()> {
+    let src = src.as_ref();
+    let dst = dst.as_ref();
+
+    if !dst.exists() {
+        fs::create_dir_all(dst)?;
+    }
+
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        if file_type.is_dir() {
+            copy_dir_all(&src_path, &dst_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&src_path, &dst_path)?;
+        }
+    }
 
     Ok(())
 }
