@@ -93,18 +93,29 @@ fn mount_volume(device_name: &str, volume: &devices::Volume) -> NetResult<()> {
         )),
         None => src_path.to_path_buf(),
     };
+
     let staging_path = binding.as_path();
+
+    // Create staging path if it doesn't exist.
+    if !staging_path.exists() {
+        if src_path.is_file() {
+            fs::copy(&src_path, staging_path).map_err(|err| {
+                NetError::BasicError(format!(
+                    "Unable to copy {src_path:?} to {staging_path:?}\n{err:?}"
+                ))
+            })?;
+        } else if src_path.is_dir() {
+            copy_dir_all(&src_path, staging_path).map_err(|err| {
+                NetError::BasicError(format!(
+                    "Unable to copy {src_path:?} to {staging_path:?}\n{err:?}"
+                ))
+            })?;
+        }
+    }
 
     // Create dst path if it doesn't exist.
     if !dst_path.exists() {
         if src_path.is_file() {
-            // Copy file to staging path.
-            if src_path != staging_path {
-                fs::copy(&src_path, staging_path).map_err(|err| {
-                    NetError::BasicError(format!("Unable to copy {src_path:?} to {staging_path:?}\n{err:?}"))
-                })?;
-            }
-
             let parent = dst_path.parent().unwrap();
             fs::create_dir_all(parent).map_err(|err| {
                 NetError::BasicError(format!(
@@ -119,15 +130,6 @@ fn mount_volume(device_name: &str, volume: &devices::Volume) -> NetResult<()> {
                 ))
             })?;
         } else if src_path.is_dir() {
-            // Copy to staging directory.
-            if src_path != staging_path {
-                copy_dir_all(&src_path, staging_path).map_err(|err| {
-                    NetError::BasicError(format!(
-                        "Unable to copy {src_path:?} to {staging_path:?}\n{err:?}"
-                    ))
-                })?;
-            }
-
             fs::create_dir_all(dst_path).map_err(|err| {
                 NetError::BasicError(format!(
                     "Unable to create volume path {:?}: {err:?}",

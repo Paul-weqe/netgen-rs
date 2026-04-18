@@ -424,10 +424,11 @@ impl Router {
                         let devnull: RawFd =
                             open("/dev/null", OFlag::O_RDWR, Mode::empty())
                                 .unwrap();
+
                         // TODO: Handle these unwraps
-                        dup2(devnull, 0).unwrap();
-                        dup2(devnull, 1).unwrap();
-                        dup2(devnull, 2).unwrap();
+                        dup2(devnull, 0).unwrap(); // stdin
+                        dup2(devnull, 1).unwrap(); // stdout
+                        dup2(devnull, 2).unwrap(); // stderr
 
                         // Execute command (no extra process layer!)
                         let _ = Command::new(cmd).args(args).exec();
