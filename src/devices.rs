@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::future::Future;
-use std::os::fd::{AsFd, AsRawFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
@@ -10,7 +10,9 @@ use nix::fcntl::{OFlag, open};
 use nix::net::if_::if_nametoindex;
 use nix::sched::{CloneFlags, setns};
 use nix::sys::stat::Mode;
-use nix::unistd::{ForkResult, dup2, fork, setsid};
+use nix::unistd::{
+    ForkResult, dup2_stderr, dup2_stdin, dup2_stdout, fork, setsid,
+};
 use rand::Rng;
 use rand::distributions::Alphanumeric;
 use rtnetlink::{Handle, LinkBridge, LinkUnspec, LinkVeth, new_connection};
@@ -421,14 +423,13 @@ impl Router {
 
                     Ok(ForkResult::Child) => {
                         // Redirect stdio → /dev/null
-                        let devnull: RawFd =
+                        let devnull: OwnedFd =
                             open("/dev/null", OFlag::O_RDWR, Mode::empty())
                                 .unwrap();
 
-                        // TODO: Handle these unwraps
-                        dup2(devnull, 0).unwrap(); // stdin
-                        dup2(devnull, 1).unwrap(); // stdout
-                        dup2(devnull, 2).unwrap(); // stderr
+                        let _ = dup2_stdin(&devnull);
+                        let _ = dup2_stdout(&devnull);
+                        let _ = dup2_stderr(&devnull);
 
                         // Execute command (no extra process layer!)
                         let _ = Command::new(cmd).args(args).exec();
