@@ -17,7 +17,14 @@ use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::Registry;
 
-fn main() -> NetResult<()> {
+fn main() {
+    if let Err(err) = ngen_main() {
+        error!(%err);
+        std::process::exit(1);
+    }
+}
+
+fn ngen_main() -> NetResult<()> {
     init_tracing();
     let app_match = command!("netgen")
         .subcommand(
@@ -40,12 +47,7 @@ fn main() -> NetResult<()> {
     match app_match.subcommand() {
         Some(("start", start_args)) => {
             let (mut topology, config_file_name) =
-                parse_config_args(start_args)
-                    .map_err(|err| {
-                        error!(%err);
-                        std::process::exit(1);
-                    })
-                    .unwrap();
+                parse_config_args(start_args)?;
 
             if instance_running() {
                 let err = NetError::BasicError(format!(
@@ -79,27 +81,11 @@ fn main() -> NetResult<()> {
             });
         }
         Some(("stop", stop_args)) => {
-            let topology = parse_config_args(stop_args)
-                .map_err(|err| {
-                    error!(%err);
-                    std::process::exit(1);
-                })
-                .unwrap()
-                .0;
-            topology.power_off().map_err(|err| {
-                error!(%err);
-                std::process::exit(1);
-            });
+            let (topology, _config_file_name) = parse_config_args(stop_args)?;
+            topology.power_off()?;
         }
         Some(("login", login_args)) => {
-            // TODO: Look into customizing the LoginErrors. Currently mushed
-            // together with ConfigErrors. Improved partitioning of the two.
-            let router = parse_login_args(login_args)
-                .map_err(|err| {
-                    error!(%err);
-                    std::process::exit(1);
-                })
-                .unwrap();
+            let router = parse_login_args(login_args)?;
 
             // Check if topology instance is running.
             if !instance_running() {
@@ -278,23 +264,18 @@ fn login_args() -> Vec<Arg> {
 fn parse_config_args(
     config_args: &ArgMatches,
 ) -> NetResult<(Topology, String)> {
-    match config_args.get_one::<String>("Topo File") {
-        Some(topo_yml_file) => {
-            let mut topo_file = File::open(topo_yml_file).map_err(|err| {
-                NamespaceError::FileOpen {
-                    path: topo_yml_file.to_string(),
-                    source: err,
-                }
-            })?;
-            let topology = TopologyParser::from_yaml_file(&mut topo_file)?;
-            Ok((topology, topo_yml_file.to_string()))
-        }
-        None => {
-            let err = ConfigError::TopologyFileMissing;
-            error!(%err, "configuration issues");
-            std::process::exit(1);
-        }
-    }
+    let topo_yml_file = config_args
+        .get_one::<String>("Topo File")
+        .ok_or(ConfigError::TopologyFileMissing)?;
+
+    let mut topo_file =
+        File::open(topo_yml_file).map_err(|err| NamespaceError::FileOpen {
+            path: topo_yml_file.to_string(),
+            source: err,
+        })?;
+
+    let topology = TopologyParser::from_yaml_file(&mut topo_file)?;
+    Ok((topology, topo_yml_file.to_string()))
 }
 
 fn parse_login_args(config_args: &ArgMatches) -> NetResult<Router> {

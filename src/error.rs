@@ -22,6 +22,8 @@ pub enum NetError {
     LinkError(#[from] LinkError),
 }
 
+// TODO: Look into customizing the LoginErrors. Currently mushed
+// together with ConfigErrors. Improved partitioning of the two.
 #[derive(Debug, ThisError)]
 pub enum LoginError {
     #[error("Unable to reach {0}, make sure device has been turned on.")]
@@ -32,6 +34,9 @@ pub enum LoginError {
 pub enum ConfigError {
     #[error("Topology file not configured.")]
     TopologyFileMissing,
+
+    #[error("Sim name is not configured.")]
+    SimNameMissing,
 
     #[error("Device name is not configured.")]
     DeviceNameMissing,
