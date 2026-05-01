@@ -68,6 +68,15 @@ pub fn mount_device(
 }
 
 pub fn mount_router_volumes(router: &devices::Router) -> NetResult<()> {
+    if router.volumes.len() > 0 {
+        let vols_dir = format!("{DEVICES_NS_DIR}/{}/vols", router.name);
+        fs::create_dir_all(&vols_dir).map_err(|err| {
+            NetError::BasicError(format!(
+                "Unable to create {vols_dir}\n{err:?}"
+            ))
+        })?;
+    }
+
     for volume in &router.volumes {
         mount_volume(&router.name, &volume)?;
     }
