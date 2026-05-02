@@ -1,6 +1,6 @@
 pub mod devices;
 pub mod error;
-pub mod parser;
+mod parser;
 pub mod topology;
 
 use std::fs::{File, create_dir_all, remove_dir_all};
@@ -22,7 +22,18 @@ pub const NS_DIR: &str = "/tmp/netgen-rs/ns";
 pub const DEVICES_NS_DIR: &str = "/tmp/netgen-rs/ns/devices";
 pub const MAIN_NS_DIR: &str = "/tmp/netgen-rs/ns/main";
 
-// Returns Ok(device_netns_path, device_pidns_path)
+/// For a Router R, we mount the relevant namespaces to the locations.
+///
+/// A network and PID namespaces are created, and mounted to
+/// `DEVICES_NS_DIR/{device_name}/net` / `DEVICES_NS_DIR/{device_name}/pid`
+/// if it is a Router
+///
+///
+/// When device_name is None, we are mounting the main namespace, which will be
+/// used as the parent to all the Router namespaces that will eventually be
+/// created. In that case, A network and PID namespaces are created, and
+/// mounted to :
+/// `MAIN_NS_DIR/net` and `MAIN_NS_DIR/pid` are
 pub fn mount_device(
     device_name: Option<String>,
 ) -> NetResult<(String, String)> {
@@ -325,27 +336,23 @@ fn create_ns(device: &DeviceDetails) -> NetResult<()> {
 
 /// Kills the PIDs the device namespaces are running on,
 /// then unmounts their mountpoints.
-pub fn destroy_ns(device_name: Option<String>) -> NetResult<()> {
+pub(crate) fn destroy_ns(device_name: Option<String>) -> NetResult<()> {
     let device = DeviceDetails::new(device_name.clone());
 
     if let Some(pid) = find_pid_from_mountpoint(&device.netns_path()) {
-        kill_process(pid)?;
+        kill(Pid::from_raw(pid), Signal::SIGKILL).map_err(|err| {
+            NetError::BasicError(format!(
+                "Unable to kill process PID {pid} : {err:?}"
+            ))
+        })?;
     }
 
     umount_ns(device_name)
 }
 
-pub fn kill_process(pid: i32) -> NetResult<()> {
-    kill(Pid::from_raw(pid), Signal::SIGKILL).map_err(|err| {
-        NetError::BasicError(format!(
-            "Unable to kill process PID {pid} : {err:?}"
-        ))
-    })
-}
-
 /// Deletes the namespace created by the Router (if it exists)
 /// If deleting the main namespace, we have device_name as None.
-pub fn umount_ns(device_name: Option<String>) -> NetResult<()> {
+fn umount_ns(device_name: Option<String>) -> NetResult<()> {
     let device = DeviceDetails::new(device_name.clone());
     let net_ns_path = device.netns_path();
     let pid_ns_path = device.pidns_path();
@@ -392,7 +399,7 @@ pub fn umount_ns(device_name: Option<String>) -> NetResult<()> {
 /// We fetch the PID for the device by getting the associated PID of the network
 /// namespace mount point, we can't use the PID mount point since not all of
 /// the namespaces have them.
-pub fn find_pid_from_mountpoint(mountpoint: &str) -> Option<i32> {
+fn find_pid_from_mountpoint(mountpoint: &str) -> Option<i32> {
     let inode = fs::metadata(mountpoint).ok()?.ino();
 
     let proc = fs::read_dir("/proc").ok()?;
@@ -417,13 +424,13 @@ pub fn find_pid_from_mountpoint(mountpoint: &str) -> Option<i32> {
 
 // ==== struct DeviceDetails ====
 
-pub struct DeviceDetails {
-    pub name: String,
-    pub home_path: String,
+struct DeviceDetails {
+    name: String,
+    home_path: String,
 }
 
 impl DeviceDetails {
-    pub fn new(name: Option<String>) -> DeviceDetails {
+    fn new(name: Option<String>) -> DeviceDetails {
         match name {
             Some(name) => Self {
                 name: name.clone(),
@@ -437,12 +444,12 @@ impl DeviceDetails {
     }
 
     // Network namespace Path.
-    pub fn netns_path(&self) -> String {
+    fn netns_path(&self) -> String {
         format!("{}/net", self.home_path)
     }
 
     // PID namespace Path.
-    pub fn pidns_path(&self) -> String {
+    fn pidns_path(&self) -> String {
         format!("{}/pid", self.home_path)
     }
 }

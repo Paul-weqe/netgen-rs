@@ -37,7 +37,7 @@ impl TopologyParser {
         Ok(topology)
     }
 
-    pub fn parse_topology_config(
+    fn parse_topology_config(
         yaml_data: &Yaml,
         topology: &mut Topology,
     ) -> NetResult<()> {
@@ -118,9 +118,7 @@ impl TopologyParser {
         Ok(())
     }
 
-    pub fn parse_router_configs(
-        routers_config: &Yaml,
-    ) -> NetResult<Vec<Router>> {
+    fn parse_router_configs(routers_config: &Yaml) -> NetResult<Vec<Router>> {
         let mut routers: Vec<Router> = vec![];
 
         match routers_config {
@@ -155,9 +153,7 @@ impl TopologyParser {
         }
     }
 
-    pub fn parse_switch_configs(
-        switches_configs: &Yaml,
-    ) -> NetResult<Vec<Switch>> {
+    fn parse_switch_configs(switches_configs: &Yaml) -> NetResult<Vec<Switch>> {
         let mut switches: Vec<Switch> = vec![];
         match switches_configs {
             Yaml::Hash(configs) => {
@@ -195,7 +191,7 @@ impl TopologyParser {
         Ok(switches)
     }
 
-    pub fn parse_links_configs(links_configs: &Yaml) -> NetResult<Vec<Link>> {
+    fn parse_links_configs(links_configs: &Yaml) -> NetResult<Vec<Link>> {
         let mut links: Vec<Link> = vec![];
         if let Yaml::Array(configs) = links_configs {
             for link_config in configs {
@@ -238,7 +234,7 @@ pub struct Topology {
 }
 
 impl Topology {
-    pub fn new() -> NetResult<Self> {
+    fn new() -> NetResult<Self> {
         Ok(Self {
             links: vec![],
             nodes: BTreeMap::new(),

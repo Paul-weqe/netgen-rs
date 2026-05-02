@@ -25,9 +25,9 @@ use crate::{NS_DIR, NetResult, mount_device};
 // ==== struct Interface ====
 
 #[derive(Debug, Clone)]
-pub struct Interface {
-    pub name: String,
-    pub addresses: Vec<IpNetwork>,
+pub(crate) struct Interface {
+    pub(crate) name: String,
+    pub(crate) addresses: Vec<IpNetwork>,
 }
 
 impl Interface {
@@ -68,7 +68,7 @@ impl Interface {
 // ==== Node ====
 
 #[derive(Debug, Clone)]
-pub enum Node {
+pub(crate) enum Node {
     Router(Router),
     Switch(Switch),
 }
@@ -456,13 +456,13 @@ impl Router {
 // ==== Switch ====
 #[derive(Debug, Clone)]
 pub struct Switch {
-    pub name: String,
-    pub ifindex: Option<u32>,
-    pub interfaces: Vec<Interface>,
+    pub(crate) name: String,
+    pub(crate) ifindex: Option<u32>,
+    pub(crate) interfaces: Vec<Interface>,
 }
 
 impl Switch {
-    pub fn new(name: &str) -> Self {
+    pub(crate) fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
             ifindex: None,
@@ -471,7 +471,7 @@ impl Switch {
     }
 
     /// Initializes a network bridge representing the switch.
-    pub fn power_on(&mut self, runtime: &Runtime) -> NetResult<()> {
+    pub(crate) fn power_on(&mut self, runtime: &Runtime) -> NetResult<()> {
         let name = self.name.as_str();
 
         runtime.block_on(async {
@@ -716,7 +716,7 @@ impl LinkManager {
 // ==== Link ====
 
 #[derive(Debug, Clone)]
-pub struct Link {
+pub(crate) struct Link {
     pub src_device: String,
     pub src_iface: String,
     pub dst_device: String,
@@ -724,11 +724,11 @@ pub struct Link {
 }
 
 impl Link {
-    pub fn src(&self) -> String {
+    pub(crate) fn src(&self) -> String {
         format!("{}:{}", self.src_device, self.src_iface)
     }
 
-    pub fn dst(&self) -> String {
+    pub(crate) fn dst(&self) -> String {
         format!("{}:{}", self.dst_device, self.dst_iface)
     }
 }
