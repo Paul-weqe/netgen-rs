@@ -266,31 +266,31 @@ fn parse_config_args(
 ) -> NetResult<(Topology, String)> {
     let topo_yml_file = config_args
         .get_one::<String>("Topo File")
-        .ok_or(ConfigError::TopologyFileMissing)?;
+        .map_or_else(|| prompt_topo(), |v| v.to_string());
 
     let mut topo_file =
-        File::open(topo_yml_file).map_err(|err| NamespaceError::FileOpen {
-            path: topo_yml_file.to_string(),
+        File::open(&topo_yml_file).map_err(|err| NamespaceError::FileOpen {
+            path: topo_yml_file.clone(),
             source: err,
         })?;
 
     let topology = TopologyParser::from_yaml_file(&mut topo_file)?;
-    Ok((topology, topo_yml_file.to_string()))
+    Ok((topology, topo_yml_file))
 }
 
 fn parse_login_args(config_args: &ArgMatches) -> NetResult<Router> {
     let topo_yml_file = config_args
         .get_one::<String>("Topo File")
-        .ok_or(ConfigError::TopologyFileMissing)?;
+        .map_or_else(|| prompt_topo(), |v| v.to_string());
 
     let router_name = config_args
         .get_one::<String>("Device Name")
-        .ok_or(ConfigError::DeviceNameMissing)?;
+        .map_or_else(|| prompt_device(), |v| v.to_string());
 
     // Generate Topology.
     let mut topo_file =
-        File::open(topo_yml_file).map_err(|err| NamespaceError::FileOpen {
-            path: topo_yml_file.to_string(),
+        File::open(&topo_yml_file).map_err(|err| NamespaceError::FileOpen {
+            path: topo_yml_file.clone(),
             source: err,
         })?;
     let topology = TopologyParser::from_yaml_file(&mut topo_file)?;
@@ -298,7 +298,27 @@ fn parse_login_args(config_args: &ArgMatches) -> NetResult<Router> {
     // Fetch device.
     let router = topology
         .get_router(&router_name)
-        .ok_or(ConfigError::UnknownNode(router_name.to_string()))?;
+        .ok_or(ConfigError::UnknownNode(router_name))?;
 
     Ok(router)
+}
+
+fn prompt_topo() -> String {
+    println!("Topology YAML file name: ");
+    let mut buf = String::new();
+    let stdin = std::io::stdin();
+
+    // TODO: Create an error class for below unwrap.
+    stdin.read_line(&mut buf).unwrap();
+    buf.trim().to_string()
+}
+
+fn prompt_device() -> String {
+    println!("Device Name: ");
+    let mut buf = String::new();
+    let stdin = std::io::stdin();
+
+    // TODO: Create an error class for below unwrap.
+    stdin.read_line(&mut buf).unwrap();
+    buf.trim().to_string()
 }
