@@ -218,5 +218,8 @@ The project is still early. A few things are partially implemented or not yet wo
   simulation. The login subcommand for example, might become very verbose when
   the multiple simulations are supported.
 - **Web UI:** for sharing and viewing simulations without needing terminal access.
+- **Async power on**: When powering on the devices, everything needs to be done
+  async. Since when mounting, we have a 1 second sleep, which in large networks
+  (1000 routers etc), this may be extremely detremental to the execution speed.
 
 If any of these feel approachable, PRs are welcome.
