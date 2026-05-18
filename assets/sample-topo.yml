@@ -2,9 +2,14 @@ kinds:
   holo:
     volumes:
       - tmp/src: /tmp/holo
+    scripts:
+      - ./holo.sh
+
   frr:
     volumes:
       - tmp/src: /tmp/frr
+    scripts:
+      - ./frr.sh
 
 
 routers:

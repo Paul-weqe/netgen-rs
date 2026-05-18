@@ -397,6 +397,29 @@ impl FromYamlConfig for Kind {
                 .into());
             }
         }
+
+        match kind_config.get(&Yaml::String(String::from("scripts"))) {
+            Some(Yaml::Array(script_configs)) => {
+                for script in script_configs {
+                    if let Yaml::String(path) = script {
+                        kind.scripts.push(path.clone());
+                    }
+                }
+            }
+            Some(Yaml::Null) | None => {}
+            Some(_) => {
+                return Err(ConfigError::IncorrectType {
+                    path: YamlPath::new()
+                        .key("kinds")
+                        .key(name)
+                        .key("scripts")
+                        .unknown(),
+
+                    expected: "array".to_string(),
+                }
+                .into());
+            }
+        }
         Ok(kind)
     }
 }

@@ -459,6 +459,7 @@ impl Router {
 pub(crate) struct Kind {
     pub(crate) name: String,
     pub(crate) volumes: Vec<Volume>,
+    pub(crate) scripts: Vec<String>,
 }
 
 impl Kind {

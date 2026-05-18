@@ -57,6 +57,7 @@ impl TopologyParser {
             {
                 let routers = Self::parse_router_configs(routers_configs)?;
                 for mut router in routers {
+                    // Make 'kind' changes on Router.
                     if let Some(ref kind_name) = router.kind {
                         let kind = kinds
                             .iter()
@@ -66,6 +67,7 @@ impl TopologyParser {
                                     .into(),
                             )?;
                         router.volumes = kind.volumes.clone();
+                        router.scripts = kind.scripts.clone();
                     }
 
                     // Check if router exists.
