@@ -1,20 +1,33 @@
+kinds:
+  holo:
+    volumes:
+      - tmp/src: /tmp/holo
+  frr:
+    volumes:
+      - tmp/src: /tmp/frr
+
+
 routers:
   rt1:
+    kind: holo
     interfaces:
       lo: [ 1.1.1.1/32 ]
       eth-sw1: [ 10.0.1.1/24 ]
-    volumes:
-      - tmp/src/:tmp/dst
 
   rt2:
+    kind: frr
     interfaces:
       lo: [ 2.2.2.2/32 ]
       eth-sw1: [ 10.0.1.2/24 ]
 
+  # A router can also run without a kind. You can define everything
+  # manually.
   rt3:
     interfaces:
       lo: [ 3.3.3.3/32 ]
       eth-sw1: [ 10.0.1.3/24 ]
+    volumes:
+      - tmp/src: /tmp/dst
 
 switches:
   sw1:
@@ -36,4 +49,4 @@ links:
   - src-device: rt3
     src-iface: eth-sw1
     dst-device: sw1
-    dst-iface: eth-rt3 
+    dst-iface: eth-rt3

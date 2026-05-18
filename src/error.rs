@@ -50,6 +50,9 @@ pub enum ConfigError {
     #[error("Field has incorrect type. Expected '{expected}':\n{path}")]
     IncorrectType { path: YamlPath, expected: String },
 
+    #[error("Kind specified '{0}' does not exist")]
+    InvlidKind(String),
+
     #[error("Required field is missing:\n{path}")]
     MissingField { path: YamlPath },
 

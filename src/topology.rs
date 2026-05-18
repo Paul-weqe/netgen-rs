@@ -9,7 +9,7 @@ use yaml_rust2::YamlLoader;
 use yaml_rust2::yaml::Yaml;
 
 use crate::NetResult;
-use crate::devices::{Link, LinkManager, Node, Router, Switch};
+use crate::devices::{Kind, Link, LinkManager, Node, Router, Switch};
 use crate::error::{ConfigError, NetError, YamlPath};
 use crate::parser::{FromYamlConfig, get_string_field};
 
@@ -41,13 +41,33 @@ impl TopologyParser {
         yaml_data: &Yaml,
         topology: &mut Topology,
     ) -> NetResult<()> {
+        // Fetch routers' configurations.
         if let Yaml::Hash(topo_config_group) = yaml_data {
+            // Fetch the Kinds created
+            let mut kinds: Vec<Kind> = vec![];
+            if let Some(kinds_config) =
+                topo_config_group.get(&Yaml::String(String::from("kinds")))
+            {
+                kinds = Self::parse_kind_configs(kinds_config)?;
+            }
+
             // Fetch the routers.
             if let Some(routers_configs) =
                 topo_config_group.get(&Yaml::String(String::from("routers")))
             {
                 let routers = Self::parse_router_configs(routers_configs)?;
-                for router in routers {
+                for mut router in routers {
+                    if let Some(ref kind_name) = router.kind {
+                        let kind = kinds
+                            .iter()
+                            .find(|&kind| &kind.name == kind_name)
+                            .ok_or::<NetError>(
+                                ConfigError::InvlidKind(kind_name.to_string())
+                                    .into(),
+                            )?;
+                        router.volumes = kind.volumes.clone();
+                    }
+
                     // Check if router exists.
                     if topology.nodes.contains_key(&router.name) {
                         return Err(
@@ -147,6 +167,41 @@ impl TopologyParser {
             Yaml::Null => Ok(routers),
             _ => Err(ConfigError::IncorrectType {
                 path: YamlPath::new().key("routers").unknown(),
+                expected: "hash".to_string(),
+            }
+            .into()),
+        }
+    }
+
+    fn parse_kind_configs(kinds_config: &Yaml) -> NetResult<Vec<Kind>> {
+        let mut kinds: Vec<Kind> = vec![];
+
+        match kinds_config {
+            Yaml::Hash(configs) => {
+                for (kind_name, kind_config) in configs {
+                    let kind_name = match kind_name {
+                        Yaml::String(name) => name,
+                        _ => {
+                            return Err(ConfigError::IncorrectType {
+                                path: YamlPath::new().key("kinds").unknown(),
+                                expected: "string".to_string(),
+                            }
+                            .into());
+                        }
+                    };
+
+                    let kind = Kind::from_yaml_config(
+                        kind_name,
+                        kind_config,
+                        BTreeMap::new(),
+                    )?;
+                    kinds.push(kind);
+                }
+                Ok(kinds)
+            }
+            Yaml::Null => Ok(kinds),
+            _ => Err(ConfigError::IncorrectType {
+                path: YamlPath::new().key("kinds").unknown(),
                 expected: "hash".to_string(),
             }
             .into()),

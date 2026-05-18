@@ -4,7 +4,7 @@ use ipnetwork::IpNetwork;
 use yaml_rust2::yaml::{Hash, Yaml};
 
 use crate::NetResult;
-use crate::devices::{Interface, Router, Switch, Volume};
+use crate::devices::{Interface, Kind, Router, Switch, Volume};
 use crate::error::{ConfigError, NetError, YamlPath};
 
 // ==== trait FromYamlConfig ====
@@ -36,6 +36,26 @@ impl FromYamlConfig for Router {
         };
 
         let mut router = Self::new(name);
+
+        // Get Router kind (if any)
+        match router_config.get(&Yaml::String(String::from("kind"))) {
+            Some(Yaml::String(kind_name)) => {
+                router.kind = Some(kind_name.to_string());
+            }
+            Some(Yaml::Null) | None => { /* Ignore */ }
+            Some(_) => {
+                return Err(ConfigError::IncorrectType {
+                    path: YamlPath::new()
+                        .key("routers")
+                        .key(name)
+                        .key("kind")
+                        .unknown(),
+                    expected: "string".to_string(),
+                }
+                .into());
+            }
+        }
+
         // Router Interface Configurations.
         match router_config.get(&Yaml::String(String::from("interfaces"))) {
             Some(Yaml::Hash(interfaces_config)) => {
@@ -329,6 +349,55 @@ impl FromYamlConfig for Volume {
             }
             .into());
         }
+    }
+}
+
+// ==== impl Kind ====
+
+impl FromYamlConfig for Kind {
+    fn from_yaml_config(
+        name: &str,
+        kind_config: &Yaml,
+        _kind_ctx: BTreeMap<&str, &str>,
+    ) -> NetResult<Self> {
+        let kind_config = if let Yaml::Hash(kind_config) = kind_config {
+            kind_config
+        } else {
+            return Err(ConfigError::IncorrectType {
+                path: YamlPath::new().key("kinds").key(name).unknown(),
+                expected: "hash".to_string(),
+            }
+            .into());
+        };
+
+        let mut kind = Kind::new(name);
+
+        // Kind volume configurations.
+        match kind_config.get(&Yaml::String(String::from("volumes"))) {
+            Some(Yaml::Array(volumes_configs)) => {
+                for volume_config in volumes_configs {
+                    let volume = Volume::from_yaml_config(
+                        kind.name.as_str(),
+                        volume_config,
+                        BTreeMap::new(),
+                    )?;
+                    kind.volumes.push(volume);
+                }
+            }
+            Some(Yaml::Null) | None => { /* Ignore volume configs. */ }
+            Some(_) => {
+                return Err(ConfigError::IncorrectType {
+                    path: YamlPath::new()
+                        .key("kinds")
+                        .key(name)
+                        .key("volumes")
+                        .unknown(),
+                    expected: "hash".to_string(),
+                }
+                .into());
+            }
+        }
+        Ok(kind)
     }
 }
 

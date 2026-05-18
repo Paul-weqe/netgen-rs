@@ -94,6 +94,7 @@ pub(crate) struct Volume {
 #[derive(Clone, Debug, Default)]
 pub struct Router {
     pub name: String,
+    pub kind: Option<String>,
     pub(crate) net_path: Option<String>,
     pub(crate) pid_path: Option<String>,
     pub(crate) interfaces: Vec<Interface>,
@@ -449,6 +450,22 @@ impl Router {
                 )))
                 .into();
             }
+        }
+    }
+}
+
+// ==== Kind ====
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Kind {
+    pub(crate) name: String,
+    pub(crate) volumes: Vec<Volume>,
+}
+
+impl Kind {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            ..Default::default()
         }
     }
 }
