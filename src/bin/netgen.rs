@@ -2,8 +2,8 @@ use std::fs::{self, File};
 use std::path::Path;
 
 use clap::{Arg, ArgMatches, command};
-use netgen::devices::Router;
 use netgen::error::{ConfigError, NamespaceError, NetError};
+use netgen::node::Router;
 use netgen::topology::{Topology, TopologyParser};
 use netgen::{
     DEVICES_NS_DIR, MAIN_NS_DIR, NetResult, mount_device, mount_router_volumes,

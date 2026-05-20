@@ -1,5 +1,6 @@
-pub mod devices;
 pub mod error;
+mod link;
+pub mod node;
 mod parser;
 pub mod topology;
 
@@ -78,7 +79,7 @@ pub fn mount_device(
     Ok((device.netns_path(), device.pidns_path()))
 }
 
-pub fn mount_router_volumes(router: &devices::Router) -> NetResult<()> {
+pub fn mount_router_volumes(router: &node::Router) -> NetResult<()> {
     if router.volumes.len() > 0 {
         let vols_dir = format!("{DEVICES_NS_DIR}/{}/vols", router.name);
         fs::create_dir_all(&vols_dir).map_err(|err| {
@@ -94,7 +95,7 @@ pub fn mount_router_volumes(router: &devices::Router) -> NetResult<()> {
     Ok(())
 }
 
-fn mount_volume(device_name: &str, volume: &devices::Volume) -> NetResult<()> {
+fn mount_volume(device_name: &str, volume: &node::Volume) -> NetResult<()> {
     let src_path = Path::new(&volume.src);
     let dst_path = Path::new(&volume.dst);
 
