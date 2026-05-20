@@ -4,8 +4,8 @@ use ipnetwork::IpNetwork;
 use yaml_rust2::yaml::{Hash, Yaml};
 
 use crate::NetResult;
-use crate::devices::{Interface, Kind, Router, Switch, Volume};
 use crate::error::{ConfigError, NetError, YamlPath};
+use crate::node::{Interface, Kind, Router, Switch, Volume};
 
 // ==== trait FromYamlConfig ====
 

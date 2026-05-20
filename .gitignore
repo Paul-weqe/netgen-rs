@@ -1,9 +1,5 @@
 /target
 run.sh
 .plugin-pids
-start.sh
-stop.sh
-join.sh
-umount.sh
-login.sh
+*.sh
 .swp

@@ -9,8 +9,9 @@ use yaml_rust2::YamlLoader;
 use yaml_rust2::yaml::Yaml;
 
 use crate::NetResult;
-use crate::devices::{Kind, Link, LinkManager, Node, Router, Switch};
 use crate::error::{ConfigError, NetError, YamlPath};
+use crate::link::{Link, LinkManager};
+use crate::node::{Kind, Node, Router, Switch};
 use crate::parser::{FromYamlConfig, get_string_field};
 
 // struct TopologyParser ====
@@ -370,8 +371,7 @@ impl Topology {
     }
 
     pub fn setup_links(&self) -> NetResult<()> {
-        let link_manager = LinkManager {};
-        link_manager.setup_all(
+        LinkManager::setup_all(
             &self.runtime,
             &self.nodes,
             self.links.as_slice(),
