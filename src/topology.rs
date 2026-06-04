@@ -67,8 +67,23 @@ impl TopologyParser {
                                 ConfigError::InvlidKind(kind_name.to_string())
                                     .into(),
                             )?;
-                        router.volumes = kind.volumes.clone();
-                        router.scripts = kind.scripts.clone();
+                        let mut kind_volumes = kind.volumes.clone();
+                        let mut kind_scripts = kind.scripts.clone();
+
+                        for volume in &mut kind_volumes {
+                            volume.src =
+                                volume.src.replace("<HOSTNAME>", &router.name);
+                            volume.dst =
+                                volume.dst.replace("<HOSTNAME>", &router.name);
+                        }
+
+                        for script in &mut kind_scripts {
+                            *script =
+                                script.replace("<HOSTNAME>", &router.name);
+                        }
+
+                        router.volumes = kind_volumes;
+                        router.scripts = kind_scripts;
                     }
 
                     // Check if router exists.
