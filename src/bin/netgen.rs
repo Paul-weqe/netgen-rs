@@ -89,9 +89,9 @@ fn ngen_main() -> NetResult<()> {
 
             // Check if topology instance is running.
             if !instance_running() {
-                let err = NetError::BasicError(format!(
-                    "No topology instance currently running."
-                ));
+                let err = NetError::BasicError(
+                    "No topology instance currently running.".to_string(),
+                );
 
                 error!(%err);
                 std::process::exit(1);
@@ -99,9 +99,9 @@ fn ngen_main() -> NetResult<()> {
 
             // Check if device instance is running.
             if !device_running(&router.name) {
-                let err = NetError::BasicError(format!(
-                    "Device instance not running. Ensure device has been started"
-                ));
+                let err = NetError::BasicError(
+                    "Device instance not running. Ensure device has been started".to_string()
+                );
                 error!(%err);
                 std::process::exit(1);
             }
@@ -266,7 +266,7 @@ fn parse_config_args(
 ) -> NetResult<(Topology, String)> {
     let topo_yml_file = config_args
         .get_one::<String>("Topo File")
-        .map_or_else(|| prompt_topo(), |v| v.to_string());
+        .map_or_else(prompt_topo, |v| v.to_string());
 
     let mut topo_file =
         File::open(&topo_yml_file).map_err(|err| NamespaceError::FileOpen {
@@ -281,11 +281,11 @@ fn parse_config_args(
 fn parse_login_args(config_args: &ArgMatches) -> NetResult<Router> {
     let topo_yml_file = config_args
         .get_one::<String>("Topo File")
-        .map_or_else(|| prompt_topo(), |v| v.to_string());
+        .map_or_else(prompt_topo, |v| v.to_string());
 
     let router_name = config_args
         .get_one::<String>("Device Name")
-        .map_or_else(|| prompt_device(), |v| v.to_string());
+        .map_or_else(prompt_device, |v| v.to_string());
 
     // Generate Topology.
     let mut topo_file =

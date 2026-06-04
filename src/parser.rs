@@ -76,7 +76,7 @@ impl FromYamlConfig for Router {
                     };
 
                     let interface = Interface::from_yaml_config(
-                        &iface_name,
+                        iface_name,
                         iface_config,
                         BTreeMap::from([
                             ("device_name", name),
@@ -196,7 +196,7 @@ impl FromYamlConfig for Switch {
                     match iface_name {
                         Yaml::String(iface_name) => {
                             let interface = Interface::from_yaml_config(
-                                &iface_name,
+                                iface_name,
                                 iface_config,
                                 BTreeMap::from([
                                     ("device_name", switch_name),
@@ -323,12 +323,12 @@ impl FromYamlConfig for Volume {
             if let Some((Yaml::String(src), Yaml::String(dst))) =
                 map.iter().next()
             {
-                return Ok(Volume {
+                Ok(Volume {
                     src: src.to_string(),
                     dst: dst.to_string(),
-                });
+                })
             } else {
-                return Err(ConfigError::IncorrectType {
+                Err(ConfigError::IncorrectType {
                     path: YamlPath::new()
                         .key("routers")
                         .key(router_name)
@@ -336,10 +336,10 @@ impl FromYamlConfig for Volume {
                         .unknown(),
                     expected: "'string':'string'".to_string(),
                 }
-                .into());
+                .into())
             }
         } else {
-            return Err(ConfigError::IncorrectType {
+            Err(ConfigError::IncorrectType {
                 path: YamlPath::new()
                     .key("routers")
                     .key(router_name)
@@ -347,7 +347,7 @@ impl FromYamlConfig for Volume {
                     .unknown(),
                 expected: "array".to_string(),
             }
-            .into());
+            .into())
         }
     }
 }

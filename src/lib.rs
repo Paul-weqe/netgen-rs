@@ -80,7 +80,7 @@ pub fn mount_device(
 }
 
 pub fn mount_router_volumes(router: &node::Router) -> NetResult<()> {
-    if router.volumes.len() > 0 {
+    if !router.volumes.is_empty() {
         let vols_dir = format!("{DEVICES_NS_DIR}/{}/vols", router.name);
         fs::create_dir_all(&vols_dir).map_err(|err| {
             NetError::BasicError(format!(
@@ -90,7 +90,7 @@ pub fn mount_router_volumes(router: &node::Router) -> NetResult<()> {
     }
 
     for volume in &router.volumes {
-        mount_volume(&router.name, &volume)?;
+        mount_volume(&router.name, volume)?;
     }
     Ok(())
 }
@@ -120,13 +120,13 @@ fn mount_volume(device_name: &str, volume: &node::Volume) -> NetResult<()> {
     // Create staging path if it doesn't exist.
     if !staging_path.exists() {
         if src_path.is_file() {
-            fs::copy(&src_path, staging_path).map_err(|err| {
+            fs::copy(src_path, staging_path).map_err(|err| {
                 NetError::BasicError(format!(
                     "Unable to copy {src_path:?} to {staging_path:?}\n{err:?}"
                 ))
             })?;
         } else if src_path.is_dir() {
-            copy_dir_all(&src_path, staging_path).map_err(|err| {
+            copy_dir_all(src_path, staging_path).map_err(|err| {
                 NetError::BasicError(format!(
                     "Unable to copy {src_path:?} to {staging_path:?}\n{err:?}"
                 ))
@@ -414,10 +414,10 @@ fn find_pid_from_mountpoint(mountpoint: &str) -> Option<i32> {
         }
 
         let ns_file = format!("/proc/{}/ns/net", pid_str);
-        if let Ok(meta) = fs::metadata(&ns_file) {
-            if meta.ino() == inode {
-                return pid_str.parse().ok();
-            }
+        if let Ok(meta) = fs::metadata(&ns_file)
+            && meta.ino() == inode
+        {
+            return pid_str.parse().ok();
         }
     }
     None

@@ -376,7 +376,7 @@ impl Router {
         match unsafe { fork() } {
             Ok(ForkResult::Parent { .. }) => {
                 // Parent: just return immediately
-                return Ok(());
+                Ok(())
             }
 
             Ok(ForkResult::Child) => {
@@ -408,19 +408,14 @@ impl Router {
 
                         unreachable!();
                     }
-                    Err(err) => {
-                        return Err(NetError::BasicError(format!(
-                            "Problem creating detached command {cmd} {args:?} : {err:?}"
-                        )));
-                    }
+                    Err(err) => Err(NetError::BasicError(format!(
+                        "Problem creating detached command {cmd} {args:?} : {err:?}"
+                    ))),
                 }
             }
-            Err(err) => {
-                return Err(NetError::BasicError(format!(
-                    "Problem creating spawn_detached {err:?}"
-                )))
-                .into();
-            }
+            Err(err) => Err(NetError::BasicError(format!(
+                "Problem creating spawn_detached {err:?}"
+            ))),
         }
     }
 }
