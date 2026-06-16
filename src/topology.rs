@@ -322,6 +322,10 @@ impl Topology {
         })
     }
 
+    pub fn print_nodes(&self) {
+        println!("{:#?}", self.nodes);
+    }
+
     fn get_node(&self, device_name: &str) -> Option<Node> {
         self.nodes.get(device_name).cloned()
     }

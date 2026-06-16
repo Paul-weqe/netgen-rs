@@ -42,9 +42,18 @@ fn ngen_main() -> NetResult<()> {
                 .args(login_args())
                 .about("logs into device"),
         )
+        .subcommand(
+            command!("ls")
+                .args(ls_args())
+                .about("lists all the running devices"),
+        )
         .get_matches();
 
     match app_match.subcommand() {
+        Some(("ls", ls_args)) => {
+            let (topology, _config_file_name) = parse_config_args(ls_args)?;
+            println!("{:#?}", topology.print_nodes());
+        }
         Some(("start", start_args)) => {
             let (mut topology, config_file_name) =
                 parse_config_args(start_args)?;
@@ -252,6 +261,16 @@ fn login_args() -> Vec<Arg> {
             .long("device")
             .value_name("device-name")
             .help("name of device"),
+        Arg::new("Topo File")
+            .short('t')
+            .long("topo")
+            .value_name("yaml-file")
+            .help("file with the topology"),
+    ]
+}
+
+fn ls_args() -> Vec<Arg> {
+    vec![
         Arg::new("Topo File")
             .short('t')
             .long("topo")
