@@ -4,7 +4,7 @@ A network simulator written in Rust, built on top of Linux network namespaces.
 
 The project takes inspiration from
 [netgen](https://github.com/rwestphal/netgen/) and
-[holo-munet](https://github.com/holo-routing/holo-munet-topologies),
+[munet](https://github.com/LabNConsulting/munet),
 both excellent tools but aims to push further in terms of scale and
 accessibility. The long-term vision includes support for larger topologies,
 a proper terminal interface for accessing simulated devices, and eventually
