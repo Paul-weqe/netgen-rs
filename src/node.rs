@@ -136,7 +136,7 @@ impl Router {
     /// ```no_run
     /// use std::process::Command;
     ///
-    /// use topology::Router;
+    /// use netgen::node::Router;
     ///
     /// #[tokio::main]
     /// async fn main() {
@@ -150,7 +150,7 @@ impl Router {
     ///             // If no modifications have been made
     ///             // to the namespace, should only show
     ///             // the loopback ("lo") interface
-    ///             println!("{#:?}", output);
+    ///             println!("{:#?}", output);
     ///         })
     ///         .await;
     /// }
