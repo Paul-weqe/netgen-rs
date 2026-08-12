@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "devboxes": {
+      "source": "namespacelabs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/devboxes/SKILL.md",
+      "computedHash": "91f2d90782af0fc401e2928508417b4e9c8a1d17e1bb8931e8116372dab1353d"
+    }
+  }
+}

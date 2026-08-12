@@ -1,7 +1,7 @@
 use std::fs::{self, File};
 use std::path::Path;
 
-use clap::{Arg, ArgMatches, command};
+use clap::{Args, Parser, Subcommand};
 use netgen::error::{ConfigError, NamespaceError, NetError};
 use netgen::node::Router;
 use netgen::topology::{Topology, TopologyParser};
@@ -17,6 +17,48 @@ use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::Registry;
 
+#[derive(Parser)]
+#[command(name = "netgen")]
+#[command(about = "Network topology management tool")]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Subcommand)]
+pub enum Commands {
+    Start(StartStopArgs),
+    Stop(StartStopArgs),
+    Login(LoginArgs),
+}
+
+#[derive(Args)]
+pub struct StartStopArgs {
+    #[arg(short = 't', long = "topo", value_name = "yaml-file")]
+    #[arg(help = "file with the topology")]
+    #[arg(default_value = "topo.yml")]
+    pub topo_file: String,
+}
+
+#[derive(Args)]
+pub struct LoginArgs {
+    #[arg(short = 't', long = "topo", value_name = "yaml-file")]
+    #[arg(help = "file with the topology")]
+    #[arg(default_value = "topo.yml")]
+    pub topo_file: String,
+
+    #[arg(short = 'd', long = "device", value_name = "device-name")]
+    #[arg(help = "name of device")]
+    pub device_name: Option<String>,
+}
+
+#[derive(Args)]
+pub struct LsArgs {
+    #[arg(short = 't', long = "topo", value_name = "yaml-file")]
+    #[arg(help = "file with the topology")]
+    pub topo_file: Option<String>,
+}
+
 fn main() {
     if let Err(err) = ngen_main() {
         error!(%err);
@@ -26,37 +68,12 @@ fn main() {
 
 fn ngen_main() -> NetResult<()> {
     init_tracing();
-    let app_match = command!("netgen")
-        .subcommand(
-            command!("start")
-                .args(config_args())
-                .about("starts the netgen setup"),
-        )
-        .subcommand(
-            command!("stop")
-                .args(config_args())
-                .about("stops the running netgen setup"),
-        )
-        .subcommand(
-            command!("login")
-                .args(login_args())
-                .about("logs into device"),
-        )
-        .subcommand(
-            command!("ls")
-                .args(ls_args())
-                .about("lists all the running devices"),
-        )
-        .get_matches();
+    let cli = Cli::parse();
 
-    match app_match.subcommand() {
-        Some(("ls", ls_args)) => {
-            let (topology, _config_file_name) = parse_config_args(ls_args)?;
-            println!("{:#?}", topology.print_nodes());
-        }
-        Some(("start", start_args)) => {
+    match cli.command {
+        Commands::Start(args) => {
             let (mut topology, config_file_name) =
-                parse_config_args(start_args)?;
+                parse_config_args(args.topo_file)?;
 
             if instance_running() {
                 let err = NetError::BasicError(format!(
@@ -89,12 +106,13 @@ fn ngen_main() -> NetResult<()> {
                 std::process::exit(1);
             });
         }
-        Some(("stop", stop_args)) => {
-            let (topology, _config_file_name) = parse_config_args(stop_args)?;
+        Commands::Stop(args) => {
+            let (topology, _config_file_name) =
+                parse_config_args(args.topo_file)?;
             topology.power_off()?;
         }
-        Some(("login", login_args)) => {
-            let router = parse_login_args(login_args)?;
+        Commands::Login(args) => {
+            let router = parse_login_args(args.topo_file, args.device_name)?;
 
             // Check if topology instance is running.
             if !instance_running() {
@@ -166,9 +184,6 @@ fn ngen_main() -> NetResult<()> {
             execvp(&shell, &[&shell]).map_err(|err| {
                 NetError::BasicError(format!("execvp failed: {err}"))
             })?;
-        }
-        _ => {
-            // Probably "help"
         }
     }
     Ok(())
@@ -244,49 +259,7 @@ fn init_tracing() {
     });
 }
 
-fn config_args() -> Vec<Arg> {
-    vec![
-        Arg::new("Topo File")
-            .short('t')
-            .long("topo")
-            .value_name("yaml-file")
-            .help("file with the topology"),
-    ]
-}
-
-fn login_args() -> Vec<Arg> {
-    vec![
-        Arg::new("Device Name")
-            .short('d')
-            .long("device")
-            .value_name("device-name")
-            .help("name of device"),
-        Arg::new("Topo File")
-            .short('t')
-            .long("topo")
-            .value_name("yaml-file")
-            .help("file with the topology"),
-    ]
-}
-
-fn ls_args() -> Vec<Arg> {
-    vec![
-        Arg::new("Topo File")
-            .short('t')
-            .long("topo")
-            .value_name("yaml-file")
-            .help("file with the topology"),
-    ]
-}
-
-/// Returns Result<(topology_object, config_file_path)>
-fn parse_config_args(
-    config_args: &ArgMatches,
-) -> NetResult<(Topology, String)> {
-    let topo_yml_file = config_args
-        .get_one::<String>("Topo File")
-        .map_or_else(prompt_topo, |v| v.to_string());
-
+fn parse_config_args(topo_yml_file: String) -> NetResult<(Topology, String)> {
     let mut topo_file =
         File::open(&topo_yml_file).map_err(|err| NamespaceError::FileOpen {
             path: topo_yml_file.clone(),
@@ -297,14 +270,11 @@ fn parse_config_args(
     Ok((topology, topo_yml_file))
 }
 
-fn parse_login_args(config_args: &ArgMatches) -> NetResult<Router> {
-    let topo_yml_file = config_args
-        .get_one::<String>("Topo File")
-        .map_or_else(prompt_topo, |v| v.to_string());
-
-    let router_name = config_args
-        .get_one::<String>("Device Name")
-        .map_or_else(prompt_device, |v| v.to_string());
+fn parse_login_args(
+    topo_yml_file: String,
+    router_name: Option<String>,
+) -> NetResult<Router> {
+    let router_name = router_name.map_or_else(prompt_device, |v| v);
 
     // Generate Topology.
     let mut topo_file =
@@ -320,16 +290,6 @@ fn parse_login_args(config_args: &ArgMatches) -> NetResult<Router> {
         .ok_or(ConfigError::UnknownNode(router_name))?;
 
     Ok(router)
-}
-
-fn prompt_topo() -> String {
-    println!("Topology YAML file name: ");
-    let mut buf = String::new();
-    let stdin = std::io::stdin();
-
-    // TODO: Create an error class for below unwrap.
-    stdin.read_line(&mut buf).unwrap();
-    buf.trim().to_string()
 }
 
 fn prompt_device() -> String {
