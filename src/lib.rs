@@ -141,20 +141,20 @@ fn mount_volume(device_name: &str, volume: &node::Volume) -> NetResult<()> {
             fs::create_dir_all(parent).map_err(|err| {
                 NetError::BasicError(format!(
                     "Unable to create volume path {:?}: {err:?}",
-                    &parent
+                    parent
                 ))
             })?;
             File::create(dst_path).map_err(|err| {
                 NetError::BasicError(format!(
                     "Unable to create volume file {:?}: {err:?}",
-                    &dst_path
+                    dst_path
                 ))
             })?;
         } else if src_path.is_dir() {
             fs::create_dir_all(dst_path).map_err(|err| {
                 NetError::BasicError(format!(
                     "Unable to create volume path {:?}: {err:?}",
-                    &dst_path
+                    dst_path
                 ))
             })?;
         }
@@ -282,7 +282,7 @@ fn create_ns(device: &DeviceDetails) -> NetResult<()> {
     File::create(device.netns_path()).map_err(|err| {
         NetError::BasicError(format!(
             "unable to create path {} -> {err:?}",
-            &device.netns_path()
+            device.netns_path()
         ))
     })?;
     let proc_net_ns_path = "/proc/self/ns/net".to_string();
@@ -308,7 +308,7 @@ fn create_ns(device: &DeviceDetails) -> NetResult<()> {
     File::create(device.pidns_path()).map_err(|err| {
         NetError::BasicError(format!(
             "unable to create path {} -> {err:?}",
-            &device.pidns_path()
+            device.pidns_path()
         ))
     })?;
 

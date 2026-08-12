@@ -27,15 +27,29 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    #[command(about = "Starts the netgen setup")]
+    #[command(
+        long_about = "Powers on all routers and switches defined in the topology file."
+    )]
     Start(StartStopArgs),
+
+    #[command(about = "Stops the running netgen setup")]
+    #[command(
+        long_about = "Gracefully powers off all devices and cleans up network namespaces."
+    )]
     Stop(StartStopArgs),
+
+    #[command(about = "Logs into a device")]
+    #[command(
+        long_about = "Spawns a new shell inside the device's network and mount namespaces."
+    )]
     Login(LoginArgs),
 }
 
 #[derive(Args)]
 pub struct StartStopArgs {
     #[arg(short = 't', long = "topo", value_name = "yaml-file")]
-    #[arg(help = "file with the topology")]
+    #[arg(help = "file containing the topology definition")]
     #[arg(default_value = "topo.yml")]
     pub topo_file: String,
 }
@@ -43,7 +57,7 @@ pub struct StartStopArgs {
 #[derive(Args)]
 pub struct LoginArgs {
     #[arg(short = 't', long = "topo", value_name = "yaml-file")]
-    #[arg(help = "file with the topology")]
+    #[arg(help = "file containing the topology definition")]
     #[arg(default_value = "topo.yml")]
     pub topo_file: String,
 
@@ -274,7 +288,7 @@ fn parse_login_args(
     topo_yml_file: String,
     router_name: Option<String>,
 ) -> NetResult<Router> {
-    let router_name = router_name.map_or_else(prompt_device, |v| v);
+    let router_name = router_name.unwrap_or_else(prompt_device);
 
     // Generate Topology.
     let mut topo_file =
