@@ -22,7 +22,10 @@ use tracing_subscriber::registry::Registry;
 #[command(about = "Network topology management tool")]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
+
+    #[command(flatten)]
+    pub start_args: StartStopArgs,
 }
 
 #[derive(Subcommand)]
@@ -83,8 +86,9 @@ fn main() {
 fn ngen_main() -> NetResult<()> {
     init_tracing();
     let cli = Cli::parse();
+    let command = cli.command.unwrap_or(Commands::Start(cli.start_args));
 
-    match cli.command {
+    match command {
         Commands::Start(args) => {
             let (mut topology, config_file_name) =
                 parse_config_args(args.topo_file)?;
