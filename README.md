@@ -42,6 +42,13 @@ Copy the binary somewhere on your PATH:
 cp ./target/debug/netgen /usr/bin/netgen
 ```
 
+
+Once installed, running a simulation can be as simple as:
+
+```sh
+netgen
+```
+
 ---
 
 ## Defining a topology
@@ -70,7 +77,7 @@ eth0      |                                                                 | et
 +---------------------+                                         +---------------------+
 ```
 
-The corresponding `topology.yml`:
+The corresponding `topo.yml`:
 
 ```yaml
 routers:
@@ -123,12 +130,20 @@ and link them to routers the same way you'd link two routers.
 
 ## Running a simulation
 
+`start` is the default subcommand, so these are the equivalent:
+
+
+
+
 ```sh
-netgen start --topo topology.yml
+netgen
+netgen start 
+netgen start --topo.yml
 ```
 
-You'll see output like this as the devices and links come up:
+All the three commands above do the same thing.
 
+You'll see output like this as the devices and links come up:
 ```
 2025-08-17T19:40:43.222180Z DEBUG net-init: powered on router=RT-A
 2025-08-17T19:40:43.224728Z DEBUG net-init: powered on router=RT-B
@@ -175,8 +190,12 @@ Press `Ctrl+D` or type `logout` to return to your host shell.
 ## Stopping the simulation
 
 ```sh
-netgen stop --topo topology.yml
+netgen stop
+netgen stop --topo.yml
 ```
+
+The two commands above do the same thing since netgen assumes the topology file
+you are working with is called topo.yml
 
 This tears down all the devices defined in the topology file.
 
